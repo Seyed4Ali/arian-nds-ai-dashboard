@@ -3,12 +3,7 @@ uvicorn[standard]
 pandas
 numpy
 scikit-learn
-xgboost
-lightgbm
-catboost
-optuna
-duckdb
-pyarrow
-MetaTrader5
 PyYAML
 joblib
+requests
+MetaTrader5
