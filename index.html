@@ -5,118 +5,750 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#090a0c">
 <title>Arian NDS AI — Shadow Dashboard</title>
+
 <style>
-:root{color-scheme:dark;--bg:#090a0c;--card:#121419;--line:#252a32;--muted:#8f98a6;--text:#f5f7fa;--ok:#72e2a0;--warn:#ffd166;--bad:#ff7f87}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-main{max-width:980px;margin:auto;padding:18px 14px 36px}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
-h1{font-size:21px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:3px}.pill{border:1px solid #315d43;background:#102319;color:var(--ok);padding:6px 9px;border-radius:999px;font-size:11px;font-weight:700}
-.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}.wide{grid-column:1/-1}.label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}.big{font-size:27px;font-weight:760;margin-top:3px}.small{font-size:12px;color:var(--muted)}.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #1e2229}.row:last-child{border-bottom:0}
-.status{display:inline-flex;align-items:center;gap:6px;font-weight:700}.dot{width:7px;height:7px;border-radius:50%;background:var(--bad)}.ok .dot{background:var(--ok)}.warn .dot{background:var(--warn)}
-.decision{font-size:31px;font-weight:850}.decision.wait{color:var(--warn)}.decision.take{color:var(--ok)}.decision.skip{color:var(--bad)}
-button{border:1px solid var(--line);background:#1a1e25;color:var(--text);padding:10px 12px;border-radius:11px;font-weight:700}button:active{transform:translateY(1px)}
-.controls{display:flex;gap:8px;margin-top:12px}.controls button{flex:1}
-pre{margin:8px 0 0;white-space:pre-wrap;word-break:break-word;color:#b9c1cc;font-size:11px}
-@media(min-width:720px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.two{grid-column:span 2}}
+:root{
+  color-scheme:dark;
+  --bg:#090a0c;
+  --card:#121419;
+  --line:#252a32;
+  --muted:#8f98a6;
+  --text:#f5f7fa;
+  --ok:#72e2a0;
+  --warn:#ffd166;
+  --bad:#ff7f87;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif
+}
+main{max-width:1050px;margin:auto;padding:18px 14px 36px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
+h1{font-size:21px;margin:0}
+.sub{color:var(--muted);font-size:12px;margin-top:3px}
+.pill{
+  border:1px solid #315d43;
+  background:#102319;
+  color:var(--ok);
+  padding:6px 9px;
+  border-radius:999px;
+  font-size:11px;
+  font-weight:700
+}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.card{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:16px;
+  padding:14px
+}
+.wide{grid-column:1/-1}
+.label{
+  color:var(--muted);
+  font-size:10px;
+  text-transform:uppercase;
+  letter-spacing:.08em
+}
+.big{font-size:27px;font-weight:760;margin-top:3px}
+.small{font-size:12px;color:var(--muted)}
+.row{
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  padding:6px 0;
+  border-bottom:1px solid #1e2229
+}
+.row:last-child{border-bottom:0}
+.status{display:inline-flex;align-items:center;gap:6px;font-weight:700}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--bad)}
+.ok .dot{background:var(--ok)}
+.warn .dot{background:var(--warn)}
+.decision{font-size:31px;font-weight:850}
+.decision.wait{color:var(--warn)}
+.decision.take{color:var(--ok)}
+.decision.skip{color:var(--bad)}
+.decision.long{color:var(--ok)}
+.decision.short{color:var(--bad)}
+button{
+  border:1px solid var(--line);
+  background:#1a1e25;
+  color:var(--text);
+  padding:10px 12px;
+  border-radius:11px;
+  font-weight:700
+}
+button:active{transform:translateY(1px)}
+.controls{display:flex;gap:8px;margin-top:12px}
+.controls button{flex:1}
+pre{
+  margin:8px 0 0;
+  white-space:pre-wrap;
+  word-break:break-word;
+  color:#b9c1cc;
+  font-size:11px
+}
+.signal-box{
+  margin-top:10px;
+  padding:10px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:#0e1014
+}
+@media(min-width:720px){
+  .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
+  .two{grid-column:span 2}
+}
 </style>
 </head>
+
 <body>
 <main>
-  <div class="top">
-    <div><h1>Arian NDS AI</h1><div class="sub">NDS v7 · Adaptive AI · Shadow Trading</div></div>
-    <div class="pill">REAL TRADING OFF</div>
+
+<div class="top">
+  <div>
+    <h1>Arian NDS AI</h1>
+    <div class="sub">NDS v7 · Adaptive AI · Shadow Trading</div>
   </div>
+  <div class="pill">REAL TRADING OFF</div>
+</div>
 
-  <div class="grid">
-    <section class="card wide">
-      <div class="label">Market feed</div>
-      <div id="feedStatus" class="status"><span class="dot"></span>Waiting for backend</div>
-      <div id="source" class="small">API endpoint not configured</div>
-      <div class="controls">
-        <button onclick="configureApi()">Set API</button>
-        <button onclick="refreshAll()">Refresh</button>
-      </div>
-    </section>
+<div class="grid">
 
-    <section class="card"><div class="label">XAUUSD / GOLD</div><div id="price" class="big">—</div><div class="small" id="time">—</div></section>
-    <section class="card"><div class="label">Bid</div><div id="bid" class="big">—</div></section>
-    <section class="card"><div class="label">Ask</div><div id="ask" class="big">—</div></section>
-    <section class="card"><div class="label">Spread</div><div id="spread" class="big">—</div></section>
-
-    <section class="card two">
-      <div class="label">NDS signal</div>
-      <div id="nds" class="decision wait">WAIT</div>
-      <div id="ndsMeta" class="small">No closed-candle engine connected.</div>
-    </section>
-    <section class="card two">
-      <div class="label">AI decision</div>
-      <div id="ai" class="decision wait">WAIT</div>
-      <div id="aiMeta" class="small">No model decision available.</div>
-    </section>
-
-    <section class="card"><div class="label">Regime</div><div id="regime" class="big" style="font-size:20px">—</div></section>
-    <section class="card"><div class="label">Model</div><div id="model" class="big" style="font-size:16px">—</div></section>
-    <section class="card"><div class="label">Shadow equity</div><div id="equity" class="big" style="font-size:20px">—</div></section>
-    <section class="card"><div class="label">Drawdown</div><div id="dd" class="big" style="font-size:20px">—</div></section>
-
-    <section class="card wide">
-      <div class="label">Connection / diagnostics</div>
-      <pre id="diag">Waiting…</pre>
-    </section>
+<section class="card wide">
+  <div class="label">Market feed</div>
+  <div id="feedStatus" class="status warn">
+    <span class="dot"></span> API KEY REQUIRED
   </div>
+  <div id="source" class="small">Twelve Data · XAU/USD · 5min</div>
+
+  <div class="controls">
+    <button onclick="configureApi()">Set API Key</button>
+    <button onclick="refreshAll()">Refresh</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="label">XAUUSD / GOLD</div>
+  <div id="price" class="big">—</div>
+  <div class="small" id="time">—</div>
+</section>
+
+<section class="card">
+  <div class="label">Bid / Close</div>
+  <div id="bid" class="big">—</div>
+</section>
+
+<section class="card">
+  <div class="label">Ask</div>
+  <div id="ask" class="big">—</div>
+</section>
+
+<section class="card">
+  <div class="label">Spread</div>
+  <div id="spread" class="big">—</div>
+</section>
+
+<section class="card two">
+  <div class="label">NDS Signal</div>
+  <div id="nds" class="decision wait">WAIT</div>
+  <div id="ndsMeta" class="small">Waiting for market data.</div>
+
+  <div id="signalBox" class="signal-box">
+    <div class="row"><span>Entry</span><b id="entry">—</b></div>
+    <div class="row"><span>Stop Loss</span><b id="sl">—</b></div>
+    <div class="row"><span>Take Profit</span><b id="tp">—</b></div>
+  </div>
+</section>
+
+<section class="card two">
+  <div class="label">AI Decision</div>
+  <div id="ai" class="decision wait">WAIT</div>
+  <div id="aiMeta" class="small">NDS rule engine connected.</div>
+</section>
+
+<section class="card">
+  <div class="label">ATR</div>
+  <div id="atr" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card">
+  <div class="label">Cycle / ATR</div>
+  <div id="ratio" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card">
+  <div class="label">EMA 20</div>
+  <div id="emaFast" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card">
+  <div class="label">EMA 50</div>
+  <div id="emaSlow" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card wide">
+  <div class="label">Connection / Diagnostics</div>
+  <pre id="diag">Waiting…</pre>
+</section>
+
+</div>
 </main>
+
 <script>
-const API_KEY="arian_api_base";
-function apiBase(){return (localStorage.getItem(API_KEY)||"").replace(/\/+$/,"")}
+const API_KEY_STORAGE = "arian_twelve_data_api_key";
+
+function getApiKey(){
+  return localStorage.getItem(API_KEY_STORAGE) || "";
+}
+
 function configureApi(){
-  const current=apiBase();
-  const v=prompt("Backend API base URL (example: https://your-backend.example.com)",current);
-  if(v!==null){localStorage.setItem(API_KEY,v.trim().replace(/\/+$/,""));refreshAll();}
+  const current = getApiKey();
+  const key = prompt(
+    "Enter your Twelve Data API key.\n\nThe key is stored only in this browser.",
+    current
+  );
+
+  if(key !== null){
+    const clean = key.trim();
+    if(clean) localStorage.setItem(API_KEY_STORAGE, clean);
+    else localStorage.removeItem(API_KEY_STORAGE);
+    refreshAll();
+  }
 }
-function setText(id,v){document.getElementById(id).textContent=v}
-function money(v){return Number.isFinite(v)?"$"+v.toFixed(2):"—"}
-function price(v){return Number.isFinite(v)?v.toFixed(2):"—"}
-function decisionClass(id,val){
-  const el=document.getElementById(id);el.className="decision "+String(val||"WAIT").toLowerCase();
+
+function setText(id,value){
+  document.getElementById(id).textContent = value;
 }
+
+function price(value){
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(2) : "—";
+}
+
+function decisionClass(id,value){
+  const el = document.getElementById(id);
+  const v = String(value || "WAIT").toLowerCase();
+  el.className = "decision " + v;
+}
+
+function ema(values,period){
+  if(values.length < period) return null;
+
+  const alpha = 2 / (period + 1);
+  let e = values[0];
+
+  for(let i=1;i<values.length;i++){
+    e = alpha * values[i] + (1-alpha) * e;
+  }
+
+  return e;
+}
+
+function atr(bars,period=14){
+  if(bars.length < period + 1) return null;
+
+  const trs=[];
+
+  for(let i=1;i<bars.length;i++){
+    const b=bars[i];
+    const pc=bars[i-1].close;
+
+    trs.push(
+      Math.max(
+        b.high-b.low,
+        Math.abs(b.high-pc),
+        Math.abs(b.low-pc)
+      )
+    );
+  }
+
+  const last=trs.slice(-period);
+  return last.reduce((a,b)=>a+b,0)/period;
+}
+
+function findCycle(bars,minCandles=2,window=60){
+  if(bars.length < minCandles+3) return null;
+
+  const data =
+    bars.length > window+1
+      ? bars.slice(-(window+1))
+      : bars.slice();
+
+  const ha=[];
+
+  for(let i=0;i<data.length;i++){
+    const b=data[i];
+
+    const hc=(b.open+b.high+b.low+b.close)/4;
+
+    const ho =
+      i===0
+        ? (b.open+b.close)/2
+        : (ha[i-1].open+ha[i-1].close)/2;
+
+    ha.push({open:ho,close:hc});
+  }
+
+  let runColor=0;
+  let runLen=0;
+  let lastStart=null;
+  let lastColor=null;
+
+  for(let k=0;k<ha.length;k++){
+    const color=ha[k].close>ha[k].open ? 1 : -1;
+
+    if(color===runColor) runLen++;
+    else{
+      runColor=color;
+      runLen=1;
+    }
+
+    if(runLen===minCandles){
+      lastStart=k-minCandles+1;
+      lastColor=color;
+    }
+  }
+
+  if(lastStart===null) return null;
+
+  const runStart=data.length-1-lastStart;
+  const startIdx=data.length-1-runStart;
+  const prevIdx=Math.max(0,startIdx-1);
+
+  let p0,p1,p0t,p1t,longSetup;
+
+  if(lastColor===-1){
+    p0=data[prevIdx].high;
+    p0t=data[prevIdx].time;
+
+    const segment=data.slice(startIdx);
+    const p1bar=segment.reduce(
+      (min,b)=>b.low<min.low?b:min,
+      segment[0]
+    );
+
+    p1=p1bar.low;
+    p1t=p1bar.time;
+    longSetup=false;
+  }else{
+    p0=data[prevIdx].low;
+    p0t=data[prevIdx].time;
+
+    const segment=data.slice(startIdx);
+    const p1bar=segment.reduce(
+      (max,b)=>b.high>max.high?b:max,
+      segment[0]
+    );
+
+    p1=p1bar.high;
+    p1t=p1bar.time;
+    longSetup=true;
+  }
+
+  return {
+    p0,p1,p0t,p1t,longSetup
+  };
+}
+
+function buildCandidate(
+  bars,
+  minCandles=2,
+  window=60,
+  entryFib=0.864,
+  slFib=1.272,
+  tpFib=0.600,
+  minCycleAtrMult=0.8,
+  fastPeriod=20,
+  slowPeriod=50,
+  useTrendFilter=true
+){
+  const cyc=findCycle(
+    bars,
+    minCandles,
+    window
+  );
+
+  const a=atr(bars,14);
+
+  if(!cyc || a===null || a<=0) return null;
+
+  const {
+    p0,p1,p0t,p1t,longSetup
+  }=cyc;
+
+  const cycleSize=Math.abs(p1-p0);
+
+  if(cycleSize < a*minCycleAtrMult){
+    return null;
+  }
+
+  const closes=bars.map(b=>b.close);
+
+  const fast=ema(
+    closes.slice(-fastPeriod),
+    fastPeriod
+  );
+
+  const slow=ema(
+    closes.slice(-slowPeriod),
+    slowPeriod
+  );
+
+  if(fast===null || slow===null){
+    return null;
+  }
+
+  const closePrice=bars[bars.length-1].close;
+
+  const trend =
+    longSetup
+      ? (closePrice>=slow && fast>=slow)
+      : (closePrice<=slow && fast<=slow);
+
+  if(useTrendFilter && !trend){
+    return null;
+  }
+
+  const r=cycleSize;
+
+  let entry,sl,tp;
+
+  if(longSetup){
+    entry=p1-r*entryFib;
+    sl=p1-r*slFib;
+    tp=p1-r*tpFib;
+  }else{
+    entry=p1+r*entryFib;
+    sl=p1+r*slFib;
+    tp=p1+r*tpFib;
+  }
+
+  return {
+    symbol:"XAUUSD",
+    timeframe:"M5",
+    timestamp:bars[bars.length-1].time,
+    direction:longSetup?"LONG":"SHORT",
+    cycle_id:
+      new Date(p0t).toISOString()+"-"+
+      new Date(p1t).toISOString(),
+
+    point0:p0,
+    point1:p1,
+    point0_time:p0t,
+    point1_time:p1t,
+
+    cycle_size:cycleSize,
+    entry,
+    stop_loss:sl,
+    take_profit:tp,
+
+    atr:a,
+    ema_fast:fast,
+    ema_slow:slow,
+    trend_aligned:trend,
+    cycle_atr_ratio:cycleSize/a
+  };
+}
+
+async function fetchBars(){
+  const key=getApiKey();
+
+  if(!key){
+    throw new Error("Twelve Data API key is not configured.");
+  }
+
+  const url =
+    "https://api.twelvedata.com/time_series"+
+    "?symbol=XAU/USD"+
+    "&interval=5min"+
+    "&outputsize=300"+
+    "&apikey="+encodeURIComponent(key);
+
+  const response=await fetch(
+    url,
+    {cache:"no-store"}
+  );
+
+  if(!response.ok){
+    throw new Error("Twelve Data HTTP "+response.status);
+  }
+
+  const data=await response.json();
+
+  if(data.status==="error"){
+    throw new Error(
+      data.message || "Twelve Data API error"
+    );
+  }
+
+  if(!data.values || !data.values.length){
+    throw new Error("No candle data returned.");
+  }
+
+  const bars=data.values
+    .slice()
+    .reverse()
+    .map(row=>({
+      time: new Date(
+        row.datetime.replace(" ","T")+"Z"
+      ),
+      open:Number(row.open),
+      high:Number(row.high),
+      low:Number(row.low),
+      close:Number(row.close)
+    }));
+
+  return bars;
+}
+
 async function refreshAll(){
-  const base=apiBase();
-  if(!base){
-    setText("feedStatus","● Backend not configured");
-    document.getElementById("feedStatus").className="status warn";
-    setText("source","Tap Set API after the Python backend is deployed.");
+
+  const key=getApiKey();
+
+  if(!key){
+    setText(
+      "feedStatus",
+      "● API KEY REQUIRED"
+    );
+
+    document.getElementById(
+      "feedStatus"
+    ).className="status warn";
+
+    setText(
+      "source",
+      "Tap Set API Key to connect Twelve Data."
+    );
+
     return;
   }
+
   try{
-    const q=await (await fetch(base+"/api/live/quote",{cache:"no-store"})).json();
-    if(q.ok){
-      setText("feedStatus","● CONNECTED");
-      document.getElementById("feedStatus").className="status ok";
-      setText("source",(q.source||"Feed")+(q.indicative?" · indicative":""));
-      setText("price",price(q.bid));setText("bid",price(q.bid));setText("ask",price(q.ask));
-      setText("spread",price(q.spread));setText("time",q.timestamp_utc||"—");
-    }else{throw Error(q.error||"quote error")}
-    try{
-      const s=await (await fetch(base+"/api/status",{cache:"no-store"})).json();
-      const d=s.decision||{}; const c=s.candidate||{};
-      setText("nds",c.direction?c.direction:"WAIT");
-      setText("ndsMeta",c?JSON.stringify({cycle_id:c.cycle_id,entry:c.entry,sl:c.stop_loss,tp:c.take_profit}):"No NDS candidate");
-      setText("ai",d.decision||"WAIT"); decisionClass("ai",d.decision||"WAIT");
-      setText("aiMeta",d.probability!=null?`P=${(d.probability*100).toFixed(1)}% · ExpR=${Number(d.expected_r||0).toFixed(2)} · C=${Number(d.confidence||0).toFixed(2)}`:"No AI decision");
-      setText("regime",(s.regime||s.features?.regime||"—"));
-      setText("model",d.model_version||"—");
-      const sh=s.shadow||{};setText("equity",money(sh.equity));setText("dd",sh.drawdown_pct!=null?Number(sh.drawdown_pct).toFixed(2)+"%":"—");
-      setText("diag",JSON.stringify({engine_running:s.engine_running,connection:s.connection,tick:s.tick,last_error:s.last_error,updated_at:s.updated_at},null,2));
-    }catch(e){
-      setText("diag","Quote connected, but NDS/AI API unavailable: "+e.message);
+
+    setText(
+      "feedStatus",
+      "● CONNECTING"
+    );
+
+    document.getElementById(
+      "feedStatus"
+    ).className="status warn";
+
+    const bars=await fetchBars();
+
+    const latest=bars[bars.length-1];
+
+    setText(
+      "feedStatus",
+      "● CONNECTED"
+    );
+
+    document.getElementById(
+      "feedStatus"
+    ).className="status ok";
+
+    setText(
+      "source",
+      "Twelve Data · XAU/USD · 5min · "+bars.length+" bars"
+    );
+
+    setText("price",price(latest.close));
+    setText("bid",price(latest.close));
+    setText("ask",price(latest.close));
+    setText(
+      "spread",
+      "N/A"
+    );
+
+    setText(
+      "time",
+      latest.time.toISOString()
+    );
+
+    /*
+      Use completed candles only for NDS.
+      Twelve Data may return the currently-forming
+      5-minute candle as the final row.
+    */
+    const closedBars =
+      bars.length>1
+        ? bars.slice(0,-1)
+        : bars;
+
+    const c=buildCandidate(closedBars);
+
+    if(!c){
+
+      setText("nds","WAIT");
+      decisionClass("nds","WAIT");
+
+      setText(
+        "ndsMeta",
+        "No valid NDS v7 candidate on the latest closed candle."
+      );
+
+      setText("ai","WAIT");
+      decisionClass("ai","WAIT");
+
+      setText(
+        "aiMeta",
+        "NDS conditions not satisfied."
+      );
+
+      setText("entry","—");
+      setText("sl","—");
+      setText("tp","—");
+
+      const a=atr(closedBars,14);
+      const closes=closedBars.map(b=>b.close);
+
+      setText(
+        "atr",
+        price(a)
+      );
+
+      setText(
+        "emaFast",
+        price(ema(closes.slice(-20),20))
+      );
+
+      setText(
+        "emaSlow",
+        price(ema(closes.slice(-50),50))
+      );
+
+      setText("ratio","—");
+
+      setText(
+        "diag",
+        JSON.stringify({
+          source:"Twelve Data",
+          symbol:"XAU/USD",
+          timeframe:"5min",
+          bars:bars.length,
+          closed_bars:closedBars.length,
+          nds:"WAIT",
+          updated_at:new Date().toISOString()
+        },null,2)
+      );
+
+      return;
     }
-  }catch(e){
-    setText("feedStatus","● DISCONNECTED");
-    document.getElementById("feedStatus").className="status";
-    setText("source",e.message);
-    setText("diag","Backend connection error: "+e.message);
+
+    setText(
+      "nds",
+      c.direction
+    );
+
+    decisionClass(
+      "nds",
+      c.direction
+    );
+
+    setText(
+      "ndsMeta",
+      "Cycle "+c.cycle_id+
+      " · Trend aligned: "+
+      (c.trend_aligned?"YES":"NO")
+    );
+
+    setText("entry",price(c.entry));
+    setText("sl",price(c.stop_loss));
+    setText("tp",price(c.take_profit));
+
+    /*
+      The current BaselineDecisionModel lives in Python.
+      Until a browser-side model is added, we expose the
+      NDS-qualified signal as the shadow AI decision.
+    */
+    const aiDecision =
+      c.trend_aligned
+        ? "TAKE"
+        : "WAIT";
+
+    setText(
+      "ai",
+      aiDecision
+    );
+
+    decisionClass(
+      "ai",
+      aiDecision
+    );
+
+    setText(
+      "aiMeta",
+      "Browser shadow decision · Trend aligned: "+
+      (c.trend_aligned?"YES":"NO")
+    );
+
+    setText("atr",price(c.atr));
+    setText("ratio",c.cycle_atr_ratio.toFixed(3));
+    setText("emaFast",price(c.ema_fast));
+    setText("emaSlow",price(c.ema_slow));
+
+    setText(
+      "diag",
+      JSON.stringify({
+        source:"Twelve Data",
+        symbol:c.symbol,
+        timeframe:c.timeframe,
+        bars:bars.length,
+        closed_bars:closedBars.length,
+        direction:c.direction,
+        entry:c.entry,
+        stop_loss:c.stop_loss,
+        take_profit:c.take_profit,
+        atr:c.atr,
+        ema_fast:c.ema_fast,
+        ema_slow:c.ema_slow,
+        trend_aligned:c.trend_aligned,
+        cycle_atr_ratio:c.cycle_atr_ratio,
+        ai_decision:aiDecision,
+        real_trading:false,
+        updated_at:new Date().toISOString()
+      },null,2)
+    );
+
+  }catch(error){
+
+    setText(
+      "feedStatus",
+      "● DISCONNECTED"
+    );
+
+    document.getElementById(
+      "feedStatus"
+    ).className="status";
+
+    setText(
+      "source",
+      error.message
+    );
+
+    setText(
+      "diag",
+      "Twelve Data connection error:\n"+
+      error.message
+    );
   }
 }
-refreshAll();setInterval(refreshAll,5000);
+
+refreshAll();
+
+/*
+  Do not poll every 2 seconds.
+  60 seconds is enough for this dashboard
+  and avoids unnecessary API consumption.
+*/
+setInterval(
+  refreshAll,
+  60000
+);
 </script>
+
 </body>
 </html>
