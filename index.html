@@ -97,6 +97,14 @@ pre{
   border-radius:12px;
   background:#0e1014
 }
+
+.trade-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.trade-open{border-left:3px solid var(--ok)}
+.trade-pending{border-left:3px solid var(--warn)}
+.trade-win{border-left:3px solid var(--ok)}
+.trade-loss{border-left:3px solid var(--bad)}
+.trade-row{padding:10px 8px;border-bottom:1px solid var(--line)}
+.trade-row:last-child{border-bottom:0}
 @media(min-width:720px){
   .grid{grid-template-columns:repeat(4,minmax(0,1fr))}
   .two{grid-column:span 2}
@@ -187,6 +195,53 @@ pre{
 <section class="card">
   <div class="label">EMA 50</div>
   <div id="emaSlow" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card wide">
+  <div class="label">Shadow Account</div>
+  <div class="grid" style="margin-top:8px">
+    <div>
+      <div class="small">Balance</div>
+      <div id="balance" class="big">$1,000.00</div>
+    </div>
+    <div>
+      <div class="small">Equity</div>
+      <div id="equity" class="big">$1,000.00</div>
+    </div>
+    <div>
+      <div class="small">P/L</div>
+      <div id="pnl" class="big">$0.00</div>
+    </div>
+    <div>
+      <div class="small">Drawdown</div>
+      <div id="drawdown" class="big">0.00%</div>
+    </div>
+    <div>
+      <div class="small">Win Rate</div>
+      <div id="winrate" class="big">0.00%</div>
+    </div>
+    <div>
+      <div class="small">Trades</div>
+      <div id="tradeCount" class="big">0</div>
+    </div>
+  </div>
+  <div class="controls">
+    <button onclick="resetShadow()">Reset Shadow Account</button>
+  </div>
+</section>
+
+<section class="card wide">
+  <div class="label">Current Shadow Trade</div>
+  <div id="currentTrade" class="signal-box">
+    <div class="small">No active trade.</div>
+  </div>
+</section>
+
+<section class="card wide">
+  <div class="label">Trade History</div>
+  <div id="history" class="signal-box">
+    <div class="small">No trades yet.</div>
+  </div>
 </section>
 
 <section class="card wide">
@@ -737,7 +792,382 @@ async function refreshAll(){
   }
 }
 
+
+/* =========================================================
+   SHADOW TRADING ENGINE
+   Browser-only simulation. REAL TRADING IS DISABLED.
+   ========================================================= */
+
+const SHADOW_STORAGE = "arian_nds_shadow_v1";
+const SHADOW_STARTING_BALANCE = 1000;
+const SHADOW_RISK_PERCENT = 0.5;
+const SHADOW_CONTRACT_SIZE = 100;
+
+let shadow = loadShadow();
+let lastSignalCycle = null;
+let lastFetchedBars = [];
+
+function defaultShadow(){
+  return {
+    startingBalance: SHADOW_STARTING_BALANCE,
+    balance: SHADOW_STARTING_BALANCE,
+    peakEquity: SHADOW_STARTING_BALANCE,
+    trades: [],
+    active: null,
+    pending: null,
+    lastSignalCycle: null,
+    updatedAt: null
+  };
+}
+
+function loadShadow(){
+  try{
+    const raw = localStorage.getItem(SHADOW_STORAGE);
+    if(!raw) return defaultShadow();
+    const x = JSON.parse(raw);
+    return Object.assign(defaultShadow(), x);
+  }catch(e){
+    return defaultShadow();
+  }
+}
+
+function saveShadow(){
+  shadow.updatedAt = new Date().toISOString();
+  localStorage.setItem(SHADOW_STORAGE, JSON.stringify(shadow));
+}
+
+function money(v){
+  return Number.isFinite(Number(v))
+    ? "$" + Number(v).toFixed(2)
+    : "—";
+}
+
+function pct(v){
+  return Number.isFinite(Number(v))
+    ? Number(v).toFixed(2) + "%"
+    : "—";
+}
+
+function calcLots(entry, sl){
+  const riskMoney = shadow.balance * SHADOW_RISK_PERCENT / 100;
+  const distance = Math.abs(entry - sl);
+  if(distance <= 0) return 0;
+  return riskMoney / (distance * SHADOW_CONTRACT_SIZE);
+}
+
+function calcPnl(trade, exitPrice){
+  const move = trade.direction === "LONG"
+    ? exitPrice - trade.entry
+    : trade.entry - exitPrice;
+
+  return move * trade.volume * SHADOW_CONTRACT_SIZE;
+}
+
+function currentEquity(priceNow){
+  let eq = shadow.balance;
+
+  if(shadow.active){
+    eq += calcPnl(shadow.active, priceNow);
+  }
+
+  return eq;
+}
+
+function renderShadow(priceNow){
+  const equity = currentEquity(Number(priceNow));
+  shadow.peakEquity = Math.max(
+    Number(shadow.peakEquity || shadow.startingBalance),
+    equity
+  );
+
+  const dd = shadow.peakEquity > 0
+    ? ((shadow.peakEquity - equity) / shadow.peakEquity) * 100
+    : 0;
+
+  const closed = shadow.trades.filter(t => t.status === "TP" || t.status === "SL");
+  const wins = closed.filter(t => t.status === "TP").length;
+  const winRate = closed.length ? wins / closed.length * 100 : 0;
+  const pnl = shadow.balance - shadow.startingBalance;
+
+  setText("balance", money(shadow.balance));
+  setText("equity", money(equity));
+  setText("pnl", money(pnl));
+  setText("drawdown", pct(dd));
+  setText("winrate", pct(winRate));
+  setText("tradeCount", String(closed.length));
+
+  const box = document.getElementById("currentTrade");
+
+  if(shadow.active){
+    const t = shadow.active;
+    const livePnl = calcPnl(t, Number(priceNow));
+
+    box.className = "signal-box trade-open";
+    box.innerHTML = `
+      <div class="status ok"><span class="dot"></span> OPEN ${t.direction}</div>
+      <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
+      <div class="row"><span>Current</span><b>${price(priceNow)}</b></div>
+      <div class="row"><span>Stop Loss</span><b>${price(t.stop_loss)}</b></div>
+      <div class="row"><span>Take Profit</span><b>${price(t.take_profit)}</b></div>
+      <div class="row"><span>Volume</span><b>${t.volume.toFixed(4)}</b></div>
+      <div class="row"><span>Live P/L</span><b>${money(livePnl)}</b></div>
+      <div class="small">Opened ${new Date(t.openedAt).toLocaleString()}</div>
+    `;
+  }else if(shadow.pending){
+    const t = shadow.pending;
+
+    box.className = "signal-box trade-pending";
+    box.innerHTML = `
+      <div class="status warn"><span class="dot"></span> PENDING ${t.direction}</div>
+      <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
+      <div class="row"><span>Current</span><b>${price(priceNow)}</b></div>
+      <div class="row"><span>Stop Loss</span><b>${price(t.stop_loss)}</b></div>
+      <div class="row"><span>Take Profit</span><b>${price(t.take_profit)}</b></div>
+      <div class="row"><span>Volume</span><b>${t.volume.toFixed(4)}</b></div>
+      <div class="small">Waiting for price to reach entry.</div>
+    `;
+  }else{
+    box.className = "signal-box";
+    box.innerHTML = '<div class="small">No active trade.</div>';
+  }
+
+  const history = document.getElementById("history");
+
+  if(!shadow.trades.length){
+    history.innerHTML = '<div class="small">No trades yet.</div>';
+    return;
+  }
+
+  history.innerHTML = shadow.trades
+    .slice()
+    .reverse()
+    .map(t => `
+      <div class="trade-row trade-${String(t.status).toLowerCase()}">
+        <div class="row">
+          <b>${t.direction} · ${t.status}</b>
+          <b>${money(t.pnl)}</b>
+        </div>
+        <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
+        <div class="row"><span>Exit</span><b>${price(t.exit)}</b></div>
+        <div class="row"><span>SL / TP</span><b>${price(t.stop_loss)} / ${price(t.take_profit)}</b></div>
+        <div class="row"><span>Volume</span><b>${Number(t.volume).toFixed(4)}</b></div>
+        <div class="small">
+          ${new Date(t.openedAt).toLocaleString()}
+          ${t.closedAt ? " → " + new Date(t.closedAt).toLocaleString() : ""}
+        </div>
+      </div>
+    `)
+    .join("");
+}
+
+function createPendingTrade(c){
+  if(shadow.active || shadow.pending) return false;
+
+  if(!c || c.direction !== "LONG" && c.direction !== "SHORT"){
+    return false;
+  }
+
+  const volume = calcLots(c.entry, c.stop_loss);
+
+  if(!Number.isFinite(volume) || volume <= 0){
+    return false;
+  }
+
+  shadow.pending = {
+    id: "T-" + Date.now(),
+    cycle_id: c.cycle_id,
+    symbol: c.symbol,
+    timeframe: c.timeframe,
+    direction: c.direction,
+    entry: c.entry,
+    stop_loss: c.stop_loss,
+    take_profit: c.take_profit,
+    volume,
+    status: "PENDING",
+    createdAt: new Date().toISOString()
+  };
+
+  shadow.lastSignalCycle = c.cycle_id;
+  saveShadow();
+
+  return true;
+}
+
+function tryFillPending(bars){
+  if(!shadow.pending || shadow.active || !bars.length) return;
+
+  const t = shadow.pending;
+
+  /*
+    Use the currently-forming candle's range.
+    This gives the browser a reasonable approximation of
+    whether price has touched the pending entry.
+  */
+  const b = bars[bars.length - 1];
+
+  const touched = t.direction === "LONG"
+    ? b.low <= t.entry
+    : b.high >= t.entry;
+
+  if(!touched) return;
+
+  shadow.active = {
+    ...t,
+    status: "OPEN",
+    openedAt: new Date().toISOString()
+  };
+
+  shadow.pending = null;
+  saveShadow();
+}
+
+function closeTrade(status, exitPrice, hitTime){
+  if(!shadow.active) return;
+
+  const t = shadow.active;
+  const pnl = calcPnl(t, exitPrice);
+
+  const closed = {
+    ...t,
+    status,
+    exit: exitPrice,
+    pnl,
+    closedAt: hitTime || new Date().toISOString()
+  };
+
+  shadow.balance += pnl;
+  shadow.trades.push(closed);
+  shadow.active = null;
+
+  saveShadow();
+}
+
+function monitorActiveTrade(bars){
+  if(!shadow.active || !bars.length) return;
+
+  const t = shadow.active;
+
+  /*
+    Since Twelve Data gives OHLC but not tick-by-tick execution,
+    evaluate the current candle range.
+    If both TP and SL are touched inside one candle, choose the
+    conservative assumption: SL first.
+  */
+  for(const b of bars.slice(-2)){
+    const hitSL = t.direction === "LONG"
+      ? b.low <= t.stop_loss
+      : b.high >= t.stop_loss;
+
+    const hitTP = t.direction === "LONG"
+      ? b.high >= t.take_profit
+      : b.low <= t.take_profit;
+
+    if(hitSL && hitTP){
+      closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
+      return;
+    }
+
+    if(hitSL){
+      closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
+      return;
+    }
+
+    if(hitTP){
+      closeTrade("TP", t.take_profit, new Date(b.time).toISOString());
+      return;
+    }
+  }
+}
+
+function processShadow(c, bars, currentPrice){
+  /*
+    Signal is accepted only once per NDS cycle.
+    We deliberately don't create a new position while one is
+    already pending/open.
+  */
+  if(c && c.cycle_id && c.cycle_id !== shadow.lastSignalCycle){
+    const accepted = createPendingTrade(c);
+
+    if(accepted){
+      setText(
+        "aiMeta",
+        "SHADOW TRADE CREATED · Waiting for Entry"
+      );
+    }
+  }
+
+  tryFillPending(bars);
+  monitorActiveTrade(bars);
+  renderShadow(currentPrice);
+}
+
+function resetShadow(){
+  const ok = confirm(
+    "Reset the entire Shadow account and delete trade history?"
+  );
+
+  if(!ok) return;
+
+  shadow = defaultShadow();
+  lastSignalCycle = null;
+  saveShadow();
+  renderShadow(Number(document.getElementById("price").textContent) || 0);
+}
+
+const originalRefreshAll = refreshAll;
+
+refreshAll = async function(){
+  await originalRefreshAll();
+
+  try{
+    const bars = await fetchBars();
+    lastFetchedBars = bars;
+
+    const current = bars[bars.length - 1];
+    const closedBars = bars.length > 1 ? bars.slice(0,-1) : bars;
+
+    const candidate = buildCandidate(closedBars);
+
+    processShadow(
+      candidate,
+      bars,
+      current.close
+    );
+
+    if(candidate){
+      const active = shadow.active;
+      const pending = shadow.pending;
+
+      if(active){
+        setText(
+          "aiMeta",
+          "SHADOW TRADE OPEN · Monitoring TP / SL"
+        );
+      }else if(pending){
+        setText(
+          "aiMeta",
+          "SHADOW TRADE PENDING · Waiting for Entry"
+        );
+      }
+    }
+
+    renderShadow(current.close);
+
+  }catch(e){
+    renderShadow(Number(document.getElementById("price").textContent) || 0);
+  }
+};
+
+/* Initial Shadow UI */
+renderShadow(0);
+
+/*
+  Refresh every 60 seconds.
+  Twelve Data + browser-side shadow engine.
+*/
+
 refreshAll();
+
 
 /*
   Do not poll every 2 seconds.
