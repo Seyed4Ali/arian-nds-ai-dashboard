@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#090a0c">
+<title>Arian NDS AI — Shadow Dashboard</title>
+<style>
+:root{color-scheme:dark;--bg:#090a0c;--card:#121419;--line:#252a32;--muted:#8f98a6;--text:#f5f7fa;--ok:#72e2a0;--warn:#ffd166;--bad:#ff7f87}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+main{max-width:980px;margin:auto;padding:18px 14px 36px}.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
+h1{font-size:21px;margin:0}.sub{color:var(--muted);font-size:12px;margin-top:3px}.pill{border:1px solid #315d43;background:#102319;color:var(--ok);padding:6px 9px;border-radius:999px;font-size:11px;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px}.wide{grid-column:1/-1}.label{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.08em}.big{font-size:27px;font-weight:760;margin-top:3px}.small{font-size:12px;color:var(--muted)}.row{display:flex;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:1px solid #1e2229}.row:last-child{border-bottom:0}
+.status{display:inline-flex;align-items:center;gap:6px;font-weight:700}.dot{width:7px;height:7px;border-radius:50%;background:var(--bad)}.ok .dot{background:var(--ok)}.warn .dot{background:var(--warn)}
+.decision{font-size:31px;font-weight:850}.decision.wait{color:var(--warn)}.decision.take{color:var(--ok)}.decision.skip{color:var(--bad)}
+button{border:1px solid var(--line);background:#1a1e25;color:var(--text);padding:10px 12px;border-radius:11px;font-weight:700}button:active{transform:translateY(1px)}
+.controls{display:flex;gap:8px;margin-top:12px}.controls button{flex:1}
+pre{margin:8px 0 0;white-space:pre-wrap;word-break:break-word;color:#b9c1cc;font-size:11px}
+@media(min-width:720px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}.two{grid-column:span 2}}
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div><h1>Arian NDS AI</h1><div class="sub">NDS v7 · Adaptive AI · Shadow Trading</div></div>
+    <div class="pill">REAL TRADING OFF</div>
+  </div>
+
+  <div class="grid">
+    <section class="card wide">
+      <div class="label">Market feed</div>
+      <div id="feedStatus" class="status"><span class="dot"></span>Waiting for backend</div>
+      <div id="source" class="small">API endpoint not configured</div>
+      <div class="controls">
+        <button onclick="configureApi()">Set API</button>
+        <button onclick="refreshAll()">Refresh</button>
+      </div>
+    </section>
+
+    <section class="card"><div class="label">XAUUSD / GOLD</div><div id="price" class="big">—</div><div class="small" id="time">—</div></section>
+    <section class="card"><div class="label">Bid</div><div id="bid" class="big">—</div></section>
+    <section class="card"><div class="label">Ask</div><div id="ask" class="big">—</div></section>
+    <section class="card"><div class="label">Spread</div><div id="spread" class="big">—</div></section>
+
+    <section class="card two">
+      <div class="label">NDS signal</div>
+      <div id="nds" class="decision wait">WAIT</div>
+      <div id="ndsMeta" class="small">No closed-candle engine connected.</div>
+    </section>
+    <section class="card two">
+      <div class="label">AI decision</div>
+      <div id="ai" class="decision wait">WAIT</div>
+      <div id="aiMeta" class="small">No model decision available.</div>
+    </section>
+
+    <section class="card"><div class="label">Regime</div><div id="regime" class="big" style="font-size:20px">—</div></section>
+    <section class="card"><div class="label">Model</div><div id="model" class="big" style="font-size:16px">—</div></section>
+    <section class="card"><div class="label">Shadow equity</div><div id="equity" class="big" style="font-size:20px">—</div></section>
+    <section class="card"><div class="label">Drawdown</div><div id="dd" class="big" style="font-size:20px">—</div></section>
+
+    <section class="card wide">
+      <div class="label">Connection / diagnostics</div>
+      <pre id="diag">Waiting…</pre>
+    </section>
+  </div>
+</main>
+<script>
+const API_KEY="arian_api_base";
+function apiBase(){return (localStorage.getItem(API_KEY)||"").replace(/\/+$/,"")}
+function configureApi(){
+  const current=apiBase();
+  const v=prompt("Backend API base URL (example: https://your-backend.example.com)",current);
+  if(v!==null){localStorage.setItem(API_KEY,v.trim().replace(/\/+$/,""));refreshAll();}
+}
+function setText(id,v){document.getElementById(id).textContent=v}
+function money(v){return Number.isFinite(v)?"$"+v.toFixed(2):"—"}
+function price(v){return Number.isFinite(v)?v.toFixed(2):"—"}
+function decisionClass(id,val){
+  const el=document.getElementById(id);el.className="decision "+String(val||"WAIT").toLowerCase();
+}
+async function refreshAll(){
+  const base=apiBase();
+  if(!base){
+    setText("feedStatus","● Backend not configured");
+    document.getElementById("feedStatus").className="status warn";
+    setText("source","Tap Set API after the Python backend is deployed.");
+    return;
+  }
+  try{
+    const q=await (await fetch(base+"/api/live/quote",{cache:"no-store"})).json();
+    if(q.ok){
+      setText("feedStatus","● CONNECTED");
+      document.getElementById("feedStatus").className="status ok";
+      setText("source",(q.source||"Feed")+(q.indicative?" · indicative":""));
+      setText("price",price(q.bid));setText("bid",price(q.bid));setText("ask",price(q.ask));
+      setText("spread",price(q.spread));setText("time",q.timestamp_utc||"—");
+    }else{throw Error(q.error||"quote error")}
+    try{
+      const s=await (await fetch(base+"/api/status",{cache:"no-store"})).json();
+      const d=s.decision||{}; const c=s.candidate||{};
+      setText("nds",c.direction?c.direction:"WAIT");
+      setText("ndsMeta",c?JSON.stringify({cycle_id:c.cycle_id,entry:c.entry,sl:c.stop_loss,tp:c.take_profit}):"No NDS candidate");
+      setText("ai",d.decision||"WAIT"); decisionClass("ai",d.decision||"WAIT");
+      setText("aiMeta",d.probability!=null?`P=${(d.probability*100).toFixed(1)}% · ExpR=${Number(d.expected_r||0).toFixed(2)} · C=${Number(d.confidence||0).toFixed(2)}`:"No AI decision");
+      setText("regime",(s.regime||s.features?.regime||"—"));
+      setText("model",d.model_version||"—");
+      const sh=s.shadow||{};setText("equity",money(sh.equity));setText("dd",sh.drawdown_pct!=null?Number(sh.drawdown_pct).toFixed(2)+"%":"—");
+      setText("diag",JSON.stringify({engine_running:s.engine_running,connection:s.connection,tick:s.tick,last_error:s.last_error,updated_at:s.updated_at},null,2));
+    }catch(e){
+      setText("diag","Quote connected, but NDS/AI API unavailable: "+e.message);
+    }
+  }catch(e){
+    setText("feedStatus","● DISCONNECTED");
+    document.getElementById("feedStatus").className="status";
+    setText("source",e.message);
+    setText("diag","Backend connection error: "+e.message);
+  }
+}
+refreshAll();setInterval(refreshAll,5000);
+</script>
+</body>
+</html>

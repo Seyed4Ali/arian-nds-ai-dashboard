@@ -1,0 +1,33 @@
+mode:
+  live_demo: true
+  live_real_trading: false
+
+symbols: [XAUUSD]
+timeframes: [M5]
+
+nds:
+  ha_scan_bars: 60
+  min_correction_candles: 2
+  entry_fib: 0.864
+  tp_fib: 0.600
+  sl_fib: 1.272
+  min_cycle_atr_mult: 0.8
+  use_trend_filter: true
+  fast_ema: 20
+  slow_ema: 50
+
+risk:
+  min_percent: 0.0
+  max_percent: 2.0
+  default_percent: 0.5
+  max_daily_drawdown_percent: 3.0
+  max_total_drawdown_percent: 10.0
+
+execution:
+  max_spread_points: 80
+  pending_expiry_bars: 25
+  commission_per_lot: 0.0
+  slippage_points: 0
+
+demo:
+  starting_balance: 1000.0
