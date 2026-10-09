@@ -483,7 +483,7 @@ function buildCandidate(
 
   return {
     symbol:"XAUUSD",
-    timeframe:"M5",
+    timeframe:"M1",
     timestamp:bars[bars.length-1].time,
     direction:longSetup?"LONG":"SHORT",
     cycle_id:
@@ -518,7 +518,8 @@ async function fetchBars(){
   const url =
     "https://api.twelvedata.com/time_series"+
     "?symbol=XAU/USD"+
-    "&interval=5min"+
+    "&interval=1min"+
+    "&timezone=UTC"+
     "&outputsize=300"+
     "&apikey="+encodeURIComponent(key);
 
@@ -607,7 +608,7 @@ async function refreshAll(){
 
     setText(
       "source",
-      "Twelve Data · XAU/USD · 5min · "+bars.length+" bars"
+      "Twelve Data · XAU/USD · 1min · "+bars.length+" bars"
     );
 
     setText("price",price(latest.close));
@@ -626,7 +627,7 @@ async function refreshAll(){
     /*
       Use completed candles only for NDS.
       Twelve Data may return the currently-forming
-      5-minute candle as the final row.
+      1-minute candle as the final row.
     */
     const closedBars =
       bars.length>1
@@ -634,6 +635,9 @@ async function refreshAll(){
         : bars;
 
     const c=buildCandidate(closedBars);
+
+    lastFetchedBars = bars;
+    processShadow(c, bars, latest.close);
 
     if(!c){
 
@@ -800,7 +804,7 @@ async function refreshAll(){
 
 const SHADOW_STORAGE = "arian_nds_shadow_v1";
 const SHADOW_STARTING_BALANCE = 1000;
-const SHADOW_RISK_PERCENT = 0.5;
+const SHADOW_RISK_PERCENT = 5.0;
 const SHADOW_CONTRACT_SIZE = 100;
 
 let shadow = loadShadow();
@@ -816,6 +820,7 @@ function defaultShadow(){
     active: null,
     pending: null,
     lastSignalCycle: null,
+    lastSignalKey: null,
     updatedAt: null
   };
 }
@@ -962,34 +967,43 @@ function renderShadow(priceNow){
 
 function createPendingTrade(c){
   if(shadow.active || shadow.pending) return false;
+  if(!c || !["LONG", "SHORT"].includes(c.direction)) return false;
 
-  if(!c || c.direction !== "LONG" && c.direction !== "SHORT"){
-    return false;
-  }
+  const distance = Math.abs(Number(c.entry) - Number(c.stop_loss));
+  if(!Number.isFinite(distance) || distance <= 0) return false;
 
-  const volume = calcLots(c.entry, c.stop_loss);
+  // Shadow target is 1:1 reward/risk.
+  // Contract size is an assumption, not a verified broker specification.
+  const takeProfit = c.direction === "LONG"
+    ? Number(c.entry) + distance
+    : Number(c.entry) - distance;
 
-  if(!Number.isFinite(volume) || volume <= 0){
-    return false;
-  }
+  const volume = calcLots(Number(c.entry), Number(c.stop_loss));
+  if(!Number.isFinite(volume) || volume <= 0) return false;
+
+  const signalTime = new Date(c.timestamp);
+  const validSignalTime = Number.isFinite(signalTime.getTime())
+    ? signalTime.toISOString()
+    : new Date().toISOString();
 
   shadow.pending = {
     id: "T-" + Date.now(),
     cycle_id: c.cycle_id,
     symbol: c.symbol,
-    timeframe: c.timeframe,
+    timeframe: "M1",
     direction: c.direction,
-    entry: c.entry,
-    stop_loss: c.stop_loss,
-    take_profit: c.take_profit,
+    entry: Number(c.entry),
+    stop_loss: Number(c.stop_loss),
+    take_profit: takeProfit,
     volume,
     status: "PENDING",
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    signalTime: validSignalTime,
+    expiresAt: Date.now() + 5 * 60 * 1000
   };
 
   shadow.lastSignalCycle = c.cycle_id;
   saveShadow();
-
   return true;
 }
 
@@ -998,27 +1012,41 @@ function tryFillPending(bars){
 
   const t = shadow.pending;
 
-  /*
-    Use the currently-forming candle's range.
-    This gives the browser a reasonable approximation of
-    whether price has touched the pending entry.
-  */
-  const b = bars[bars.length - 1];
+  // Clear old pending orders, including legacy orders with no expiry.
+  if(!Number.isFinite(Number(t.expiresAt)) ||
+     Date.now() >= Number(t.expiresAt)){
+    shadow.pending = null;
+    saveShadow();
+    setText("aiMeta", "SHADOW PENDING EXPIRED · Waiting for next signal");
+    return;
+  }
 
-  const touched = t.direction === "LONG"
-    ? b.low <= t.entry
-    : b.high >= t.entry;
+  const signalMs = new Date(t.signalTime || t.createdAt).getTime();
+  if(!Number.isFinite(signalMs)) return;
 
-  if(!touched) return;
+  // Only candles after the signal candle can fill the order.
+  const eligibleBars = bars.filter(
+    b => new Date(b.time).getTime() > signalMs
+  );
 
-  shadow.active = {
-    ...t,
-    status: "OPEN",
-    openedAt: new Date().toISOString()
-  };
+  for(const b of eligibleBars){
+    const touched = t.direction === "LONG"
+      ? b.low <= t.entry
+      : b.high >= t.entry;
 
-  shadow.pending = null;
-  saveShadow();
+    if(!touched) continue;
+
+    shadow.active = {
+      ...t,
+      status: "OPEN",
+      openedAt: new Date().toISOString(),
+      openedBarTime: new Date(b.time).toISOString()
+    };
+
+    shadow.pending = null;
+    saveShadow();
+    return;
+  }
 }
 
 function closeTrade(status, exitPrice, hitTime){
@@ -1046,14 +1074,11 @@ function monitorActiveTrade(bars){
   if(!shadow.active || !bars.length) return;
 
   const t = shadow.active;
+  const openedMs = new Date(t.openedBarTime || t.openedAt).getTime();
 
-  /*
-    Since Twelve Data gives OHLC but not tick-by-tick execution,
-    evaluate the current candle range.
-    If both TP and SL are touched inside one candle, choose the
-    conservative assumption: SL first.
-  */
-  for(const b of bars.slice(-2)){
+  for(const b of bars){
+    if(new Date(b.time).getTime() <= openedMs) continue;
+
     const hitSL = t.direction === "LONG"
       ? b.low <= t.stop_loss
       : b.high >= t.stop_loss;
@@ -1062,16 +1087,16 @@ function monitorActiveTrade(bars){
       ? b.high >= t.take_profit
       : b.low <= t.take_profit;
 
+    // OHLC candles cannot reveal which level was hit first.
+    // Conservatively assume SL first if both were touched.
     if(hitSL && hitTP){
       closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
       return;
     }
-
     if(hitSL){
       closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
       return;
     }
-
     if(hitTP){
       closeTrade("TP", t.take_profit, new Date(b.time).toISOString());
       return;
@@ -1081,14 +1106,31 @@ function monitorActiveTrade(bars){
 
 function processShadow(c, bars, currentPrice){
   /*
-    Signal is accepted only once per NDS cycle.
-    We deliberately don't create a new position while one is
-    already pending/open.
+    Identify each signal by its NDS cycle and candle timestamp.
+    This allows fresh-candle signals within the same cycle,
+    without accepting the same candle signal repeatedly.
   */
-  if(c && c.cycle_id && c.cycle_id !== shadow.lastSignalCycle){
+  const signalDate = c && c.timestamp
+    ? new Date(c.timestamp)
+    : null;
+
+  const signalKey = c && c.cycle_id && signalDate &&
+    Number.isFinite(signalDate.getTime())
+      ? c.cycle_id + "|" + signalDate.toISOString()
+      : null;
+
+  if(
+    signalKey &&
+    signalKey !== shadow.lastSignalKey &&
+    !shadow.active &&
+    !shadow.pending
+  ){
     const accepted = createPendingTrade(c);
 
     if(accepted){
+      shadow.lastSignalKey = signalKey;
+      saveShadow();
+
       setText(
         "aiMeta",
         "SHADOW TRADE CREATED · Waiting for Entry"
@@ -1113,50 +1155,6 @@ function resetShadow(){
   saveShadow();
   renderShadow(Number(document.getElementById("price").textContent) || 0);
 }
-
-const originalRefreshAll = refreshAll;
-
-refreshAll = async function(){
-  await originalRefreshAll();
-
-  try{
-    const bars = await fetchBars();
-    lastFetchedBars = bars;
-
-    const current = bars[bars.length - 1];
-    const closedBars = bars.length > 1 ? bars.slice(0,-1) : bars;
-
-    const candidate = buildCandidate(closedBars);
-
-    processShadow(
-      candidate,
-      bars,
-      current.close
-    );
-
-    if(candidate){
-      const active = shadow.active;
-      const pending = shadow.pending;
-
-      if(active){
-        setText(
-          "aiMeta",
-          "SHADOW TRADE OPEN · Monitoring TP / SL"
-        );
-      }else if(pending){
-        setText(
-          "aiMeta",
-          "SHADOW TRADE PENDING · Waiting for Entry"
-        );
-      }
-    }
-
-    renderShadow(current.close);
-
-  }catch(e){
-    renderShadow(Number(document.getElementById("price").textContent) || 0);
-  }
-};
 
 /* Initial Shadow UI */
 renderShadow(0);
