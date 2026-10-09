@@ -99,6 +99,7 @@ pre{
 }
 
 .trade-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+@media(max-width:520px){.trade-grid{grid-template-columns:1fr}}
 .trade-open{border-left:3px solid var(--ok)}
 .trade-pending{border-left:3px solid var(--warn)}
 .trade-win{border-left:3px solid var(--ok)}
@@ -130,7 +131,7 @@ pre{
   <div id="feedStatus" class="status warn">
     <span class="dot"></span> API KEY REQUIRED
   </div>
-  <div id="source" class="small">Twelve Data · XAU/USD · 5min</div>
+  <div id="source" class="small">Twelve Data · 4-market scanner · M1 / M5</div>
 
   <div class="controls">
     <button onclick="configureApi()">Set API Key</button>
@@ -195,6 +196,14 @@ pre{
 <section class="card">
   <div class="label">EMA 50</div>
   <div id="emaSlow" class="big" style="font-size:20px">—</div>
+</section>
+
+<section class="card wide">
+  <div class="label">Market Scanner · XAU/USD + BTC/USD · M1 / M5</div>
+  <div id="scannerGrid" class="trade-grid">
+    <div class="signal-box"><div class="small">Waiting for market scan…</div></div>
+  </div>
+  <div class="small" style="margin-top:8px">Browser-side simulation only. Contract sizes are assumptions (XAU: 100 oz/lot, BTC: 1 BTC/lot); verify against a broker before using these figures for any real account.</div>
 </section>
 
 <section class="card wide">
@@ -418,59 +427,45 @@ function buildCandidate(
   minCycleAtrMult=0.8,
   fastPeriod=20,
   slowPeriod=50,
-  useTrendFilter=true
+  useTrendFilter=true,
+  symbol="XAU/USD",
+  timeframe="M1",
+  diagnostics=null
 ){
-  const cyc=findCycle(
-    bars,
-    minCandles,
-    window
-  );
-
-  const a=atr(bars,14);
-
-  if(!cyc || a===null || a<=0) return null;
-
-  const {
-    p0,p1,p0t,p1t,longSetup
-  }=cyc;
-
-  const cycleSize=Math.abs(p1-p0);
-
-  if(cycleSize < a*minCycleAtrMult){
+  const reject = reason => {
+    if(diagnostics) diagnostics.reason = reason;
     return null;
+  };
+  if(!bars || bars.length < slowPeriod + 1){
+    return reject(`Not enough closed candles (${bars ? bars.length : 0}; need at least ${slowPeriod + 1}).`);
+  }
+  const cyc=findCycle(bars,minCandles,window);
+  const a=atr(bars,14);
+  if(!cyc) return reject(`No Heikin-Ashi cycle meeting the ${minCandles}-candle rule.`);
+  if(a===null || a<=0) return reject("ATR is unavailable or zero.");
+
+  const {p0,p1,p0t,p1t,longSetup}=cyc;
+  const cycleSize=Math.abs(p1-p0);
+  const cycleAtrRatio=cycleSize/a;
+  if(cycleSize < a*minCycleAtrMult){
+    return reject(`Cycle too small: ${cycleAtrRatio.toFixed(3)} ATR; minimum is ${minCycleAtrMult}.`);
   }
 
   const closes=bars.map(b=>b.close);
-
-  const fast=ema(
-    closes.slice(-fastPeriod),
-    fastPeriod
-  );
-
-  const slow=ema(
-    closes.slice(-slowPeriod),
-    slowPeriod
-  );
-
-  if(fast===null || slow===null){
-    return null;
-  }
+  const fast=ema(closes.slice(-fastPeriod),fastPeriod);
+  const slow=ema(closes.slice(-slowPeriod),slowPeriod);
+  if(fast===null || slow===null) return reject("Not enough candles for EMA filters.");
 
   const closePrice=bars[bars.length-1].close;
-
-  const trend =
-    longSetup
-      ? (closePrice>=slow && fast>=slow)
-      : (closePrice<=slow && fast<=slow);
-
+  const trend=longSetup
+    ? (closePrice>=slow && fast>=slow)
+    : (closePrice<=slow && fast<=slow);
   if(useTrendFilter && !trend){
-    return null;
+    return reject(`Trend filter rejected ${longSetup ? "LONG" : "SHORT"}: EMA20/EMA50 are not aligned.`);
   }
 
   const r=cycleSize;
-
   let entry,sl,tp;
-
   if(longSetup){
     entry=p1-r*entryFib;
     sl=p1-r*slFib;
@@ -480,688 +475,381 @@ function buildCandidate(
     sl=p1+r*slFib;
     tp=p1+r*tpFib;
   }
-
+  if(diagnostics) diagnostics.reason="Candidate valid.";
   return {
-    symbol:"XAUUSD",
-    timeframe:"M1",
+    symbol,
+    timeframe,
     timestamp:bars[bars.length-1].time,
     direction:longSetup?"LONG":"SHORT",
-    cycle_id:
-      new Date(p0t).toISOString()+"-"+
-      new Date(p1t).toISOString(),
-
+    cycle_id:new Date(p0t).toISOString()+"-"+new Date(p1t).toISOString(),
     point0:p0,
     point1:p1,
     point0_time:p0t,
     point1_time:p1t,
-
     cycle_size:cycleSize,
     entry,
     stop_loss:sl,
     take_profit:tp,
-
     atr:a,
     ema_fast:fast,
     ema_slow:slow,
     trend_aligned:trend,
-    cycle_atr_ratio:cycleSize/a
+    cycle_atr_ratio:cycleAtrRatio
   };
 }
 
-async function fetchBars(){
+const MARKET_CONFIGS = [
+  {id:"XAUUSD_M1", symbol:"XAU/USD", timeframe:"M1", interval:"1min", minutes:1},
+  {id:"XAUUSD_M5", symbol:"XAU/USD", timeframe:"M5", interval:"5min", minutes:5},
+  {id:"BTCUSD_M1", symbol:"BTC/USD", timeframe:"M1", interval:"1min", minutes:1},
+  {id:"BTCUSD_M5", symbol:"BTC/USD", timeframe:"M5", interval:"5min", minutes:5}
+];
+
+async function fetchBars(symbol, interval){
   const key=getApiKey();
-
-  if(!key){
-    throw new Error("Twelve Data API key is not configured.");
-  }
-
-  const url =
-    "https://api.twelvedata.com/time_series"+
-    "?symbol=XAU/USD"+
-    "&interval=1min"+
-    "&timezone=UTC"+
-    "&outputsize=300"+
-    "&apikey="+encodeURIComponent(key);
-
-  const response=await fetch(
-    url,
-    {cache:"no-store"}
-  );
-
-  if(!response.ok){
-    throw new Error("Twelve Data HTTP "+response.status);
-  }
-
+  if(!key) throw new Error("Twelve Data API key is not configured.");
+  const url="https://api.twelvedata.com/time_series"+
+    "?symbol="+encodeURIComponent(symbol)+
+    "&interval="+encodeURIComponent(interval)+
+    "&timezone=UTC&outputsize=300&apikey="+encodeURIComponent(key);
+  const response=await fetch(url,{cache:"no-store"});
+  if(!response.ok) throw new Error("Twelve Data HTTP "+response.status);
   const data=await response.json();
-
-  if(data.status==="error"){
-    throw new Error(
-      data.message || "Twelve Data API error"
-    );
-  }
-
-  if(!data.values || !data.values.length){
-    throw new Error("No candle data returned.");
-  }
-
-  const bars=data.values
-    .slice()
-    .reverse()
-    .map(row=>({
-      time: new Date(
-        row.datetime.replace(" ","T")+"Z"
-      ),
-      open:Number(row.open),
-      high:Number(row.high),
-      low:Number(row.low),
-      close:Number(row.close)
-    }));
-
-  return bars;
+  if(data.status==="error") throw new Error(data.message || "Twelve Data API error");
+  if(!data.values || !data.values.length) throw new Error("No candle data returned.");
+  return data.values.slice().reverse().map(row=>({
+    time:new Date(row.datetime.replace(" ","T")+"Z"),
+    open:Number(row.open),
+    high:Number(row.high),
+    low:Number(row.low),
+    close:Number(row.close)
+  }));
 }
+
+let marketResults = {};
+let refreshInProgress = false;
 
 async function refreshAll(){
-
+  if(refreshInProgress) return;
   const key=getApiKey();
-
   if(!key){
-    setText(
-      "feedStatus",
-      "● API KEY REQUIRED"
-    );
-
-    document.getElementById(
-      "feedStatus"
-    ).className="status warn";
-
-    setText(
-      "source",
-      "Tap Set API Key to connect Twelve Data."
-    );
-
+    setText("feedStatus","● API KEY REQUIRED");
+    document.getElementById("feedStatus").className="status warn";
+    setText("source","Tap Set API Key to connect Twelve Data.");
     return;
   }
-
+  refreshInProgress=true;
+  setText("feedStatus","● SCANNING 4 MARKETS");
+  document.getElementById("feedStatus").className="status warn";
+  const nextResults={};
+  let successful=0;
   try{
-
-    setText(
-      "feedStatus",
-      "● CONNECTING"
-    );
-
-    document.getElementById(
-      "feedStatus"
-    ).className="status warn";
-
-    const bars=await fetchBars();
-
-    const latest=bars[bars.length-1];
-
-    setText(
-      "feedStatus",
-      "● CONNECTED"
-    );
-
-    document.getElementById(
-      "feedStatus"
-    ).className="status ok";
-
-    setText(
-      "source",
-      "Twelve Data · XAU/USD · 1min · "+bars.length+" bars"
-    );
-
-    setText("price",price(latest.close));
-    setText("bid",price(latest.close));
-    setText("ask",price(latest.close));
-    setText(
-      "spread",
-      "N/A"
-    );
-
-    setText(
-      "time",
-      latest.time.toISOString()
-    );
-
-    /*
-      Use completed candles only for NDS.
-      Twelve Data may return the currently-forming
-      1-minute candle as the final row.
-    */
-    const closedBars =
-      bars.length>1
-        ? bars.slice(0,-1)
-        : bars;
-
-    const c=buildCandidate(closedBars);
-
-    lastFetchedBars = bars;
-    processShadow(c, bars, latest.close);
-
-    if(!c){
-
-      setText("nds","WAIT");
-      decisionClass("nds","WAIT");
-
-      setText(
-        "ndsMeta",
-        "No valid NDS v7 candidate on the latest closed candle."
-      );
-
-      setText("ai","WAIT");
-      decisionClass("ai","WAIT");
-
-      setText(
-        "aiMeta",
-        "NDS conditions not satisfied."
-      );
-
-      setText("entry","—");
-      setText("sl","—");
-      setText("tp","—");
-
-      const a=atr(closedBars,14);
-      const closes=closedBars.map(b=>b.close);
-
-      setText(
-        "atr",
-        price(a)
-      );
-
-      setText(
-        "emaFast",
-        price(ema(closes.slice(-20),20))
-      );
-
-      setText(
-        "emaSlow",
-        price(ema(closes.slice(-50),50))
-      );
-
-      setText("ratio","—");
-
-      setText(
-        "diag",
-        JSON.stringify({
-          source:"Twelve Data",
-          symbol:"XAU/USD",
-          timeframe:"5min",
-          bars:bars.length,
-          closed_bars:closedBars.length,
-          nds:"WAIT",
-          updated_at:new Date().toISOString()
-        },null,2)
-      );
-
-      return;
+    // Sequential requests reduce burst pressure on Twelve Data API limits.
+    for(const cfg of MARKET_CONFIGS){
+      const result={config:cfg,bars:[],closedBars:[],latest:null,candidate:null,reason:"Waiting for data.",error:null};
+      try{
+        const bars=await fetchBars(cfg.symbol,cfg.interval);
+        if(bars.length<2) throw new Error("At least two candles are needed to identify the current candle.");
+        const latest=bars[bars.length-1];
+        const closedBars=bars.slice(0,-1);
+        const diagnostics={reason:"Checking NDS conditions."};
+        const candidate=buildCandidate(closedBars,2,60,0.864,1.272,0.600,0.8,20,50,true,cfg.symbol,cfg.timeframe,diagnostics);
+        Object.assign(result,{bars,closedBars,latest,candidate,reason:diagnostics.reason});
+        successful++;
+        processMarketShadow(cfg,candidate,bars,latest.close);
+      }catch(error){
+        result.error=error.message || String(error);
+        result.reason="Data/API error: "+result.error;
+      }
+      nextResults[cfg.id]=result;
+      marketResults=nextResults;
+      renderScanner();
     }
-
-    setText(
-      "nds",
-      c.direction
-    );
-
-    decisionClass(
-      "nds",
-      c.direction
-    );
-
-    setText(
-      "ndsMeta",
-      "Cycle "+c.cycle_id+
-      " · Trend aligned: "+
-      (c.trend_aligned?"YES":"NO")
-    );
-
-    setText("entry",price(c.entry));
-    setText("sl",price(c.stop_loss));
-    setText("tp",price(c.take_profit));
-
-    /*
-      The current BaselineDecisionModel lives in Python.
-      Until a browser-side model is added, we expose the
-      NDS-qualified signal as the shadow AI decision.
-    */
-    const aiDecision =
-      c.trend_aligned
-        ? "TAKE"
-        : "WAIT";
-
-    setText(
-      "ai",
-      aiDecision
-    );
-
-    decisionClass(
-      "ai",
-      aiDecision
-    );
-
-    setText(
-      "aiMeta",
-      "Browser shadow decision · Trend aligned: "+
-      (c.trend_aligned?"YES":"NO")
-    );
-
-    setText("atr",price(c.atr));
-    setText("ratio",c.cycle_atr_ratio.toFixed(3));
-    setText("emaFast",price(c.ema_fast));
-    setText("emaSlow",price(c.ema_slow));
-
-    setText(
-      "diag",
-      JSON.stringify({
-        source:"Twelve Data",
-        symbol:c.symbol,
-        timeframe:c.timeframe,
-        bars:bars.length,
-        closed_bars:closedBars.length,
-        direction:c.direction,
-        entry:c.entry,
-        stop_loss:c.stop_loss,
-        take_profit:c.take_profit,
-        atr:c.atr,
-        ema_fast:c.ema_fast,
-        ema_slow:c.ema_slow,
-        trend_aligned:c.trend_aligned,
-        cycle_atr_ratio:c.cycle_atr_ratio,
-        ai_decision:aiDecision,
-        real_trading:false,
-        updated_at:new Date().toISOString()
-      },null,2)
-    );
-
-  }catch(error){
-
-    setText(
-      "feedStatus",
-      "● DISCONNECTED"
-    );
-
-    document.getElementById(
-      "feedStatus"
-    ).className="status";
-
-    setText(
-      "source",
-      error.message
-    );
-
-    setText(
-      "diag",
-      "Twelve Data connection error:\n"+
-      error.message
-    );
+    marketResults=nextResults;
+    const primary=marketResults.XAUUSD_M1;
+    const failed=Object.values(marketResults).filter(r=>r.error).length;
+    setText("feedStatus",successful===4?"● CONNECTED · 4/4":successful?`● PARTIAL · ${successful}/4`:"● DISCONNECTED");
+    document.getElementById("feedStatus").className=successful===4?"status ok":successful?"status warn":"status";
+    setText("source",`Twelve Data · ${successful}/4 markets loaded · XAU/USD + BTC/USD · M1 / M5`);
+    if(primary && primary.latest){
+      setText("price",price(primary.latest.close));
+      setText("bid",price(primary.latest.close));
+      setText("ask",price(primary.latest.close));
+      setText("spread","N/A");
+      setText("time",primary.latest.time.toISOString());
+      renderPrimarySignal(primary);
+    }else{
+      setText("nds","WAIT"); decisionClass("nds","WAIT");
+      setText("ndsMeta","XAU/USD M1 unavailable.");
+      setText("ai","WAIT"); decisionClass("ai","WAIT");
+      setText("aiMeta","Check market scanner diagnostics.");
+      setText("entry","—"); setText("sl","—"); setText("tp","—");
+    }
+    setText("diag",JSON.stringify({
+      source:"Twelve Data",
+      scanner:MARKET_CONFIGS.map(cfg=>{
+        const r=marketResults[cfg.id] || {};
+        return {symbol:cfg.symbol,timeframe:cfg.timeframe,interval:cfg.interval,
+          bars:r.bars ? r.bars.length : 0,
+          closed_bars:r.closedBars ? r.closedBars.length : 0,
+          signal:r.candidate ? r.candidate.direction : "WAIT",
+          reason:r.reason,error:r.error || null,
+          entry:r.candidate ? r.candidate.entry : null,
+          stop_loss:r.candidate ? r.candidate.stop_loss : null,
+          take_profit:r.candidate ? r.candidate.take_profit : null,
+          atr:r.candidate ? r.candidate.atr : null,
+          cycle_atr_ratio:r.candidate ? r.candidate.cycle_atr_ratio : null};
+      }),
+      api_failures:failed,
+      real_trading:false,
+      updated_at:new Date().toISOString()
+    },null,2));
+    renderShadow();
+  }finally{
+    refreshInProgress=false;
   }
 }
 
+function renderPrimarySignal(result){
+  const c=result && result.candidate;
+  if(!c){
+    setText("nds","WAIT"); decisionClass("nds","WAIT");
+    setText("ndsMeta",result ? result.reason : "Waiting for XAU/USD M1 data.");
+    setText("ai","WAIT"); decisionClass("ai","WAIT");
+    setText("aiMeta","No qualified XAU/USD M1 signal.");
+    setText("entry","—"); setText("sl","—"); setText("tp","—");
+    const bars=result && result.closedBars ? result.closedBars : [];
+    const a=atr(bars,14); const closes=bars.map(b=>b.close);
+    setText("atr",price(a));
+    setText("emaFast",price(ema(closes.slice(-20),20)));
+    setText("emaSlow",price(ema(closes.slice(-50),50)));
+    setText("ratio","—");
+    return;
+  }
+  setText("nds",c.direction); decisionClass("nds",c.direction);
+  setText("ndsMeta",`${c.symbol} ${c.timeframe} · Cycle ${c.cycle_id} · Trend aligned: ${c.trend_aligned?"YES":"NO"}`);
+  setText("entry",price(c.entry)); setText("sl",price(c.stop_loss)); setText("tp",price(c.take_profit));
+  const aiDecision=c.trend_aligned?"TAKE":"WAIT";
+  setText("ai",aiDecision); decisionClass("ai",aiDecision);
+  setText("aiMeta",`Browser shadow decision · ${c.symbol} ${c.timeframe} · Trend aligned: ${c.trend_aligned?"YES":"NO"}`);
+  setText("atr",price(c.atr)); setText("ratio",c.cycle_atr_ratio.toFixed(3));
+  setText("emaFast",price(c.ema_fast)); setText("emaSlow",price(c.ema_slow));
+}
 
 /* =========================================================
-   SHADOW TRADING ENGINE
+   MULTI-MARKET SHADOW ENGINE
    Browser-only simulation. REAL TRADING IS DISABLED.
+   Contract multipliers are simulation assumptions, not broker specifications.
    ========================================================= */
-
-const SHADOW_STORAGE = "arian_nds_shadow_v1";
+const SHADOW_STORAGE = "arian_nds_multi_shadow_v1";
+const LEGACY_SHADOW_STORAGE = "arian_nds_shadow_v1";
 const SHADOW_STARTING_BALANCE = 1000;
-const SHADOW_RISK_PERCENT = 5.0;
-const SHADOW_CONTRACT_SIZE = 100;
+const SHADOW_TOTAL_RISK_PERCENT = 5.0;
+const SHADOW_CONTRACT_SIZES = {"XAU/USD":100,"BTC/USD":1};
+const MARKET_BY_ID = Object.fromEntries(MARKET_CONFIGS.map(c=>[c.id,c]));
 
-let shadow = loadShadow();
-let lastSignalCycle = null;
-let lastFetchedBars = [];
-
-function defaultShadow(){
-  return {
-    startingBalance: SHADOW_STARTING_BALANCE,
-    balance: SHADOW_STARTING_BALANCE,
-    peakEquity: SHADOW_STARTING_BALANCE,
-    trades: [],
-    active: null,
-    pending: null,
-    lastSignalCycle: null,
-    lastSignalKey: null,
-    updatedAt: null
-  };
+function defaultMarketState(){return {active:null,pending:null,lastSignalKey:null,lastSignalCycle:null};}
+function defaultMultiShadow(){
+  const markets={};
+  for(const cfg of MARKET_CONFIGS) markets[cfg.id]=defaultMarketState();
+  return {startingBalance:SHADOW_STARTING_BALANCE,balance:SHADOW_STARTING_BALANCE,
+    peakEquity:SHADOW_STARTING_BALANCE,trades:[],markets,updatedAt:null};
 }
-
 function loadShadow(){
   try{
-    const raw = localStorage.getItem(SHADOW_STORAGE);
-    if(!raw) return defaultShadow();
-    const x = JSON.parse(raw);
-    return Object.assign(defaultShadow(), x);
-  }catch(e){
-    return defaultShadow();
+    const raw=localStorage.getItem(SHADOW_STORAGE);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      const base=defaultMultiShadow();
+      Object.assign(base,parsed);
+      base.markets=base.markets || {};
+      for(const cfg of MARKET_CONFIGS) base.markets[cfg.id]=Object.assign(defaultMarketState(),base.markets[cfg.id] || {});
+      base.trades=Array.isArray(base.trades)?base.trades:[];
+      return base;
+    }
+    // One-time migration from the previous single-market Shadow account.
+    const legacyRaw=localStorage.getItem(LEGACY_SHADOW_STORAGE);
+    if(legacyRaw){
+      const old=JSON.parse(legacyRaw); const migrated=defaultMultiShadow();
+      migrated.balance=Number.isFinite(Number(old.balance))?Number(old.balance):migrated.balance;
+      migrated.startingBalance=Number.isFinite(Number(old.startingBalance))?Number(old.startingBalance):migrated.startingBalance;
+      migrated.peakEquity=Number.isFinite(Number(old.peakEquity))?Number(old.peakEquity):migrated.peakEquity;
+      migrated.trades=Array.isArray(old.trades)?old.trades.map(t=>({...t,symbol:t.symbol==="XAUUSD"?"XAU/USD":(t.symbol||"XAU/USD"),timeframe:t.timeframe||"M1"})):[];
+      const xau=migrated.markets.XAUUSD_M1;
+      xau.active=old.active?{...old.active,symbol:old.active.symbol==="XAUUSD"?"XAU/USD":(old.active.symbol||"XAU/USD"),timeframe:"M1"}:null;
+      xau.pending=old.pending?{...old.pending,symbol:old.pending.symbol==="XAUUSD"?"XAU/USD":(old.pending.symbol||"XAU/USD"),timeframe:"M1"}:null;
+      xau.lastSignalKey=old.lastSignalKey||null;
+      xau.lastSignalCycle=old.lastSignalCycle||null;
+      return migrated;
+    }
+  }catch(e){console.warn("Shadow storage could not be loaded:",e);}
+  return defaultMultiShadow();
+}
+let shadow=loadShadow();
+function saveShadow(){shadow.updatedAt=new Date().toISOString();localStorage.setItem(SHADOW_STORAGE,JSON.stringify(shadow));}
+function money(v){return Number.isFinite(Number(v))?"$"+Number(v).toFixed(2):"—";}
+function pct(v){return Number.isFinite(Number(v))?Number(v).toFixed(2)+"%":"—";}
+function contractSize(symbol){return SHADOW_CONTRACT_SIZES[symbol] || 1;}
+function calcPnl(trade,exitPrice){
+  const move=trade.direction==="LONG"?exitPrice-trade.entry:trade.entry-exitPrice;
+  return move*trade.volume*contractSize(trade.symbol);
+}
+function calcLots(symbol,entry,sl){
+  const riskMoney=shadow.balance*(SHADOW_TOTAL_RISK_PERCENT/100)/MARKET_CONFIGS.length;
+  const distance=Math.abs(entry-sl);
+  if(!Number.isFinite(distance)||distance<=0)return 0;
+  return riskMoney/(distance*contractSize(symbol));
+}
+function currentEquity(){
+  let equity=shadow.balance;
+  for(const cfg of MARKET_CONFIGS){
+    const state=shadow.markets[cfg.id];
+    if(!state || !state.active)continue;
+    const r=marketResults[cfg.id];
+    const priceNow=r && r.latest ? r.latest.close : state.active.entry;
+    equity+=calcPnl(state.active,priceNow);
   }
+  return equity;
 }
-
-function saveShadow(){
-  shadow.updatedAt = new Date().toISOString();
-  localStorage.setItem(SHADOW_STORAGE, JSON.stringify(shadow));
-}
-
-function money(v){
-  return Number.isFinite(Number(v))
-    ? "$" + Number(v).toFixed(2)
-    : "—";
-}
-
-function pct(v){
-  return Number.isFinite(Number(v))
-    ? Number(v).toFixed(2) + "%"
-    : "—";
-}
-
-function calcLots(entry, sl){
-  const riskMoney = shadow.balance * SHADOW_RISK_PERCENT / 100;
-  const distance = Math.abs(entry - sl);
-  if(distance <= 0) return 0;
-  return riskMoney / (distance * SHADOW_CONTRACT_SIZE);
-}
-
-function calcPnl(trade, exitPrice){
-  const move = trade.direction === "LONG"
-    ? exitPrice - trade.entry
-    : trade.entry - exitPrice;
-
-  return move * trade.volume * SHADOW_CONTRACT_SIZE;
-}
-
-function currentEquity(priceNow){
-  let eq = shadow.balance;
-
-  if(shadow.active){
-    eq += calcPnl(shadow.active, priceNow);
-  }
-
-  return eq;
-}
-
-function renderShadow(priceNow){
-  const equity = currentEquity(Number(priceNow));
-  shadow.peakEquity = Math.max(
-    Number(shadow.peakEquity || shadow.startingBalance),
-    equity
-  );
-
-  const dd = shadow.peakEquity > 0
-    ? ((shadow.peakEquity - equity) / shadow.peakEquity) * 100
-    : 0;
-
-  const closed = shadow.trades.filter(t => t.status === "TP" || t.status === "SL");
-  const wins = closed.filter(t => t.status === "TP").length;
-  const winRate = closed.length ? wins / closed.length * 100 : 0;
-  const pnl = shadow.balance - shadow.startingBalance;
-
-  setText("balance", money(shadow.balance));
-  setText("equity", money(equity));
-  setText("pnl", money(pnl));
-  setText("drawdown", pct(dd));
-  setText("winrate", pct(winRate));
-  setText("tradeCount", String(closed.length));
-
-  const box = document.getElementById("currentTrade");
-
-  if(shadow.active){
-    const t = shadow.active;
-    const livePnl = calcPnl(t, Number(priceNow));
-
-    box.className = "signal-box trade-open";
-    box.innerHTML = `
-      <div class="status ok"><span class="dot"></span> OPEN ${t.direction}</div>
-      <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
-      <div class="row"><span>Current</span><b>${price(priceNow)}</b></div>
-      <div class="row"><span>Stop Loss</span><b>${price(t.stop_loss)}</b></div>
-      <div class="row"><span>Take Profit</span><b>${price(t.take_profit)}</b></div>
-      <div class="row"><span>Volume</span><b>${t.volume.toFixed(4)}</b></div>
-      <div class="row"><span>Live P/L</span><b>${money(livePnl)}</b></div>
-      <div class="small">Opened ${new Date(t.openedAt).toLocaleString()}</div>
-    `;
-  }else if(shadow.pending){
-    const t = shadow.pending;
-
-    box.className = "signal-box trade-pending";
-    box.innerHTML = `
-      <div class="status warn"><span class="dot"></span> PENDING ${t.direction}</div>
-      <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
-      <div class="row"><span>Current</span><b>${price(priceNow)}</b></div>
-      <div class="row"><span>Stop Loss</span><b>${price(t.stop_loss)}</b></div>
-      <div class="row"><span>Take Profit</span><b>${price(t.take_profit)}</b></div>
-      <div class="row"><span>Volume</span><b>${t.volume.toFixed(4)}</b></div>
-      <div class="small">Waiting for price to reach entry.</div>
-    `;
-  }else{
-    box.className = "signal-box";
-    box.innerHTML = '<div class="small">No active trade.</div>';
-  }
-
-  const history = document.getElementById("history");
-
-  if(!shadow.trades.length){
-    history.innerHTML = '<div class="small">No trades yet.</div>';
-    return;
-  }
-
-  history.innerHTML = shadow.trades
-    .slice()
-    .reverse()
-    .map(t => `
-      <div class="trade-row trade-${String(t.status).toLowerCase()}">
-        <div class="row">
-          <b>${t.direction} · ${t.status}</b>
-          <b>${money(t.pnl)}</b>
-        </div>
-        <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
-        <div class="row"><span>Exit</span><b>${price(t.exit)}</b></div>
-        <div class="row"><span>SL / TP</span><b>${price(t.stop_loss)} / ${price(t.take_profit)}</b></div>
-        <div class="row"><span>Volume</span><b>${Number(t.volume).toFixed(4)}</b></div>
-        <div class="small">
-          ${new Date(t.openedAt).toLocaleString()}
-          ${t.closedAt ? " → " + new Date(t.closedAt).toLocaleString() : ""}
-        </div>
-      </div>
-    `)
-    .join("");
-}
-
-function createPendingTrade(c){
-  if(shadow.active || shadow.pending) return false;
-  if(!c || !["LONG", "SHORT"].includes(c.direction)) return false;
-
-  const distance = Math.abs(Number(c.entry) - Number(c.stop_loss));
-  if(!Number.isFinite(distance) || distance <= 0) return false;
-
-  // Shadow target is 1:1 reward/risk.
-  // Contract size is an assumption, not a verified broker specification.
-  const takeProfit = c.direction === "LONG"
-    ? Number(c.entry) + distance
-    : Number(c.entry) - distance;
-
-  const volume = calcLots(Number(c.entry), Number(c.stop_loss));
-  if(!Number.isFinite(volume) || volume <= 0) return false;
-
-  const signalTime = new Date(c.timestamp);
-  const validSignalTime = Number.isFinite(signalTime.getTime())
-    ? signalTime.toISOString()
-    : new Date().toISOString();
-
-  shadow.pending = {
-    id: "T-" + Date.now(),
-    cycle_id: c.cycle_id,
-    symbol: c.symbol,
-    timeframe: "M1",
-    direction: c.direction,
-    entry: Number(c.entry),
-    stop_loss: Number(c.stop_loss),
-    take_profit: takeProfit,
-    volume,
-    status: "PENDING",
-    createdAt: new Date().toISOString(),
-    signalTime: validSignalTime,
-    expiresAt: Date.now() + 5 * 60 * 1000
-  };
-
-  shadow.lastSignalCycle = c.cycle_id;
+function createPendingTrade(cfg,c){
+  const state=shadow.markets[cfg.id];
+  if(state.active||state.pending||!c||!["LONG","SHORT"].includes(c.direction))return false;
+  const distance=Math.abs(Number(c.entry)-Number(c.stop_loss));
+  if(!Number.isFinite(distance)||distance<=0)return false;
+  // Keep shadow reward:risk at 1:1, matching the previous simulator.
+  const takeProfit=c.direction==="LONG"?Number(c.entry)+distance:Number(c.entry)-distance;
+  const volume=calcLots(c.symbol,Number(c.entry),Number(c.stop_loss));
+  if(!Number.isFinite(volume)||volume<=0)return false;
+  const signalTime=new Date(c.timestamp);
+  if(!Number.isFinite(signalTime.getTime()))return false;
+  state.pending={id:"T-"+Date.now()+"-"+cfg.id,cycle_id:c.cycle_id,symbol:c.symbol,timeframe:c.timeframe,
+    direction:c.direction,entry:Number(c.entry),stop_loss:Number(c.stop_loss),take_profit:takeProfit,
+    volume,status:"PENDING",createdAt:new Date().toISOString(),signalTime:signalTime.toISOString(),
+    expiresAt:Date.now()+cfg.minutes*3*60*1000};
+  state.lastSignalCycle=c.cycle_id;
   saveShadow();
   return true;
 }
-
-function tryFillPending(bars){
-  if(!shadow.pending || shadow.active || !bars.length) return;
-
-  const t = shadow.pending;
-
-  // Clear old pending orders, including legacy orders with no expiry.
-  if(!Number.isFinite(Number(t.expiresAt)) ||
-     Date.now() >= Number(t.expiresAt)){
-    shadow.pending = null;
-    saveShadow();
-    setText("aiMeta", "SHADOW PENDING EXPIRED · Waiting for next signal");
-    return;
-  }
-
-  const signalMs = new Date(t.signalTime || t.createdAt).getTime();
-  if(!Number.isFinite(signalMs)) return;
-
-  // Only candles after the signal candle can fill the order.
-  const eligibleBars = bars.filter(
-    b => new Date(b.time).getTime() > signalMs
-  );
-
-  for(const b of eligibleBars){
-    const touched = t.direction === "LONG"
-      ? b.low <= t.entry
-      : b.high >= t.entry;
-
-    if(!touched) continue;
-
-    shadow.active = {
-      ...t,
-      status: "OPEN",
-      openedAt: new Date().toISOString(),
-      openedBarTime: new Date(b.time).toISOString()
-    };
-
-    shadow.pending = null;
-    saveShadow();
-    return;
-  }
+function closeMarketTrade(cfg,status,exitPrice,hitTime){
+  const state=shadow.markets[cfg.id];if(!state.active)return;
+  const t=state.active;const pnl=calcPnl(t,exitPrice);
+  const closed={...t,status,exit:exitPrice,pnl,closedAt:hitTime||new Date().toISOString()};
+  shadow.balance+=pnl;shadow.trades.push(closed);state.active=null;saveShadow();
 }
-
-function closeTrade(status, exitPrice, hitTime){
-  if(!shadow.active) return;
-
-  const t = shadow.active;
-  const pnl = calcPnl(t, exitPrice);
-
-  const closed = {
-    ...t,
-    status,
-    exit: exitPrice,
-    pnl,
-    closedAt: hitTime || new Date().toISOString()
-  };
-
-  shadow.balance += pnl;
-  shadow.trades.push(closed);
-  shadow.active = null;
-
+function processMarketShadow(cfg,c,bars,currentPrice){
+  const state=shadow.markets[cfg.id];
+  const hadPosition=Boolean(state.active||state.pending);
+  if(state.pending){
+    const t=state.pending;
+    if(!Number.isFinite(Number(t.expiresAt))||Date.now()>=Number(t.expiresAt)){
+      state.pending=null;saveShadow();
+    }else{
+      const signalMs=new Date(t.signalTime||t.createdAt).getTime();
+      if(Number.isFinite(signalMs)){
+        for(const b of bars){
+          if(new Date(b.time).getTime()<=signalMs)continue;
+          const touched=t.direction==="LONG"?b.low<=t.entry:b.high>=t.entry;
+          if(!touched)continue;
+          state.active={...t,status:"OPEN",openedAt:new Date().toISOString(),openedBarTime:new Date(b.time).toISOString()};
+          state.pending=null;saveShadow();break;
+        }
+      }
+    }
+  }
+  if(state.active){
+    const t=state.active;
+    const openedMs=new Date(t.openedBarTime||t.openedAt).getTime();
+    for(const b of bars){
+      if(new Date(b.time).getTime()<=openedMs)continue;
+      const hitSL=t.direction==="LONG"?b.low<=t.stop_loss:b.high>=t.stop_loss;
+      const hitTP=t.direction==="LONG"?b.high>=t.take_profit:b.low<=t.take_profit;
+      // If both levels occur inside one OHLC candle, assume SL first conservatively.
+      if(hitSL&&hitTP){closeMarketTrade(cfg,"SL",t.stop_loss,new Date(b.time).toISOString());break;}
+      if(hitSL){closeMarketTrade(cfg,"SL",t.stop_loss,new Date(b.time).toISOString());break;}
+      if(hitTP){closeMarketTrade(cfg,"TP",t.take_profit,new Date(b.time).toISOString());break;}
+    }
+  }
+  if(!hadPosition&&c){
+    const signalDate=new Date(c.timestamp);
+    const signalKey=c.cycle_id&&Number.isFinite(signalDate.getTime())?c.cycle_id+"|"+signalDate.toISOString():null;
+    if(signalKey&&signalKey!==state.lastSignalKey&&createPendingTrade(cfg,c)){
+      state.lastSignalKey=signalKey;saveShadow();
+    }
+  }
+  renderShadow();
+}
+function renderScanner(){
+  const root=document.getElementById("scannerGrid");if(!root)return;
+  root.innerHTML=MARKET_CONFIGS.map(cfg=>{
+    const r=marketResults[cfg.id];const state=shadow.markets[cfg.id];
+    const c=r&&r.candidate;const priceNow=r&&r.latest?r.latest.close:null;
+    const signal=c?c.direction:"WAIT";
+    const signalClass=c?(c.direction==="LONG"?"ok":"status"):"warn";
+    const position=state&&state.active?`OPEN ${state.active.direction}`:state&&state.pending?`PENDING ${state.pending.direction}`:"No position";
+    const status=r&&r.error?"ERROR":r&&r.latest?signal:"LOADING";
+    const detail=r&&r.error?r.error:(r?r.reason:"Waiting for first scan.");
+    return `<div class="signal-box">
+      <div class="row"><b>${cfg.symbol} · ${cfg.timeframe}</b><b>${priceNow===null?"—":price(priceNow)}</b></div>
+      <div class="row"><span>Signal</span><b class="${c?(c.direction==="LONG"?"decision long":"decision short"):"decision wait"}" style="font-size:17px">${status}</b></div>
+      <div class="row"><span>Entry</span><b>${c?price(c.entry):"—"}</b></div>
+      <div class="row"><span>SL / TP</span><b>${c?price(c.stop_loss)+" / "+price(c.take_profit):"—"}</b></div>
+      <div class="row"><span>Shadow</span><b>${position}</b></div>
+      <div class="small" style="margin-top:6px">${detail}</div>
+    </div>`;
+  }).join("");
+}
+function renderShadow(){
+  const equity=currentEquity();
+  shadow.peakEquity=Math.max(Number(shadow.peakEquity||shadow.startingBalance),equity);
+  const dd=shadow.peakEquity>0?((shadow.peakEquity-equity)/shadow.peakEquity)*100:0;
+  const closed=shadow.trades.filter(t=>t.status==="TP"||t.status==="SL");
+  const wins=closed.filter(t=>t.status==="TP").length;
+  const winRate=closed.length?wins/closed.length*100:0;
+  setText("balance",money(shadow.balance));setText("equity",money(equity));
+  setText("pnl",money(shadow.balance-shadow.startingBalance));setText("drawdown",pct(dd));
+  setText("winrate",pct(winRate));setText("tradeCount",String(closed.length));
+  const positions=[];
+  for(const cfg of MARKET_CONFIGS){
+    const state=shadow.markets[cfg.id];
+    for(const [kind,t] of [["OPEN",state.active],["PENDING",state.pending]]){
+      if(!t)continue;
+      const r=marketResults[cfg.id];const priceNow=r&&r.latest?r.latest.close:t.entry;
+      const pnl=kind==="OPEN"?calcPnl(t,priceNow):null;
+      positions.push(`<div class="trade-row ${kind==="OPEN"?"trade-open":"trade-pending"}">
+        <div class="row"><b>${t.symbol} · ${t.timeframe} · ${kind} ${t.direction}</b><b>${pnl===null?"Waiting":money(pnl)}</b></div>
+        <div class="row"><span>Entry</span><b>${price(t.entry)}</b></div>
+        <div class="row"><span>SL / TP</span><b>${price(t.stop_loss)} / ${price(t.take_profit)}</b></div>
+        <div class="row"><span>Volume</span><b>${Number(t.volume).toFixed(6)}</b></div>
+        <div class="small">${kind==="OPEN"?"Opened "+new Date(t.openedAt).toLocaleString():"Waiting for entry; expires "+new Date(Number(t.expiresAt)).toLocaleTimeString()}</div>
+      </div>`);
+    }
+  }
+  const box=document.getElementById("currentTrade");
+  box.className="signal-box";box.innerHTML=positions.length?positions.join(""):'<div class="small">No active or pending shadow trades.</div>';
+  const history=document.getElementById("history");
+  if(!shadow.trades.length){history.innerHTML='<div class="small">No trades yet.</div>';}
+  else history.innerHTML=shadow.trades.slice().reverse().map(t=>`
+    <div class="trade-row trade-${String(t.status).toLowerCase()}">
+      <div class="row"><b>${t.symbol||"XAU/USD"} · ${t.timeframe||"M1"} · ${t.direction} · ${t.status}</b><b>${money(t.pnl)}</b></div>
+      <div class="row"><span>Entry / Exit</span><b>${price(t.entry)} / ${price(t.exit)}</b></div>
+      <div class="row"><span>SL / TP</span><b>${price(t.stop_loss)} / ${price(t.take_profit)}</b></div>
+      <div class="row"><span>Volume</span><b>${Number(t.volume).toFixed(6)}</b></div>
+      <div class="small">${t.openedAt?new Date(t.openedAt).toLocaleString():new Date(t.createdAt).toLocaleString()}${t.closedAt?" → "+new Date(t.closedAt).toLocaleString():""}</div>
+    </div>`).join("");
   saveShadow();
 }
-
-function monitorActiveTrade(bars){
-  if(!shadow.active || !bars.length) return;
-
-  const t = shadow.active;
-  const openedMs = new Date(t.openedBarTime || t.openedAt).getTime();
-
-  for(const b of bars){
-    if(new Date(b.time).getTime() <= openedMs) continue;
-
-    const hitSL = t.direction === "LONG"
-      ? b.low <= t.stop_loss
-      : b.high >= t.stop_loss;
-
-    const hitTP = t.direction === "LONG"
-      ? b.high >= t.take_profit
-      : b.low <= t.take_profit;
-
-    // OHLC candles cannot reveal which level was hit first.
-    // Conservatively assume SL first if both were touched.
-    if(hitSL && hitTP){
-      closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
-      return;
-    }
-    if(hitSL){
-      closeTrade("SL", t.stop_loss, new Date(b.time).toISOString());
-      return;
-    }
-    if(hitTP){
-      closeTrade("TP", t.take_profit, new Date(b.time).toISOString());
-      return;
-    }
-  }
-}
-
-function processShadow(c, bars, currentPrice){
-  /*
-    Identify each signal by its NDS cycle and candle timestamp.
-    This allows fresh-candle signals within the same cycle,
-    without accepting the same candle signal repeatedly.
-  */
-  const signalDate = c && c.timestamp
-    ? new Date(c.timestamp)
-    : null;
-
-  const signalKey = c && c.cycle_id && signalDate &&
-    Number.isFinite(signalDate.getTime())
-      ? c.cycle_id + "|" + signalDate.toISOString()
-      : null;
-
-  if(
-    signalKey &&
-    signalKey !== shadow.lastSignalKey &&
-    !shadow.active &&
-    !shadow.pending
-  ){
-    const accepted = createPendingTrade(c);
-
-    if(accepted){
-      shadow.lastSignalKey = signalKey;
-      saveShadow();
-
-      setText(
-        "aiMeta",
-        "SHADOW TRADE CREATED · Waiting for Entry"
-      );
-    }
-  }
-
-  tryFillPending(bars);
-  monitorActiveTrade(bars);
-  renderShadow(currentPrice);
-}
-
 function resetShadow(){
-  const ok = confirm(
-    "Reset the entire Shadow account and delete trade history?"
-  );
-
-  if(!ok) return;
-
-  shadow = defaultShadow();
-  lastSignalCycle = null;
-  saveShadow();
-  renderShadow(Number(document.getElementById("price").textContent) || 0);
+  if(!confirm("Reset the entire multi-market Shadow account and delete trade history?"))return;
+  shadow=defaultMultiShadow();saveShadow();renderShadow();renderScanner();
 }
 
-/* Initial Shadow UI */
-renderShadow(0);
+/* Initial multi-market Shadow UI */
+renderShadow();
+renderScanner();
 
 /*
-  Refresh every 60 seconds.
-  Twelve Data + browser-side shadow engine.
+  Refresh all four market/timeframe combinations every 60 seconds.
+  Twelve Data + browser-side shadow engine; real trading stays disabled.
 */
 
 refreshAll();
