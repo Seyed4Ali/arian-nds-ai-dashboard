@@ -529,6 +529,16 @@ async function fetchBars(symbol, interval){
 let marketResults = {};
 let refreshInProgress = false;
 
+// A closed market can leave the API's latest candle hours old. Do not create
+// fresh signals from stale candles. Allow several candle intervals for API lag.
+function candleDataIsFresh(latest, cfg){
+  if(!latest || !latest.time) return false;
+  const t = new Date(latest.time).getTime();
+  if(!Number.isFinite(t)) return false;
+  const maxAgeMs = Math.max(5, cfg.minutes * 3 + 2) * 60 * 1000;
+  return Date.now() - t <= maxAgeMs;
+}
+
 async function refreshAll(){
   if(refreshInProgress) return;
   const key=getApiKey();
@@ -553,7 +563,12 @@ async function refreshAll(){
         const latest=bars[bars.length-1];
         const closedBars=bars.slice(0,-1);
         const diagnostics={reason:"Checking NDS conditions."};
-        const candidate=buildCandidate(closedBars,2,60,0.864,1.272,0.600,0.8,20,50,true,cfg.symbol,cfg.timeframe,diagnostics);
+        let candidate=null;
+        if(!candleDataIsFresh(latest,cfg)){
+          diagnostics.reason=`Stale market data: latest candle is older than the allowed ${Math.max(5,cfg.minutes*3+2)}-minute window. New signals are blocked.`;
+        }else{
+          candidate=buildCandidate(closedBars,2,60,0.864,1.272,0.600,0.8,20,50,true,cfg.symbol,cfg.timeframe,diagnostics);
+        }
         Object.assign(result,{bars,closedBars,latest,candidate,reason:diagnostics.reason});
         successful++;
         processMarketShadow(cfg,candidate,bars,latest.close);
@@ -716,8 +731,9 @@ function createPendingTrade(cfg,c){
   if(state.active||state.pending||!c||!["LONG","SHORT"].includes(c.direction))return false;
   const distance=Math.abs(Number(c.entry)-Number(c.stop_loss));
   if(!Number.isFinite(distance)||distance<=0)return false;
-  // Keep shadow reward:risk at 1:1, matching the previous simulator.
-  const takeProfit=c.direction==="LONG"?Number(c.entry)+distance:Number(c.entry)-distance;
+  // Use the strategy's actual TP level so the Shadow trade matches the displayed signal.
+  const takeProfit=Number(c.take_profit);
+  if(!Number.isFinite(takeProfit) || (c.direction==="LONG" ? takeProfit<=Number(c.entry) : takeProfit>=Number(c.entry))) return false;
   const volume=calcLots(c.symbol,Number(c.entry),Number(c.stop_loss));
   if(!Number.isFinite(volume)||volume<=0)return false;
   const signalTime=new Date(c.timestamp);
@@ -742,6 +758,7 @@ function processMarketShadow(cfg,c,bars,currentPrice){
   if(state.pending){
     const t=state.pending;
     if(!Number.isFinite(Number(t.expiresAt))||Date.now()>=Number(t.expiresAt)){
+      shadow.trades.push({...t,status:"EXPIRED",exit:null,pnl:0,closedAt:new Date().toISOString(),reason:"Entry price was not reached before pending order expired."});
       state.pending=null;saveShadow();
     }else{
       const signalMs=new Date(t.signalTime||t.createdAt).getTime();
@@ -831,10 +848,10 @@ function renderShadow(){
   else history.innerHTML=shadow.trades.slice().reverse().map(t=>`
     <div class="trade-row trade-${String(t.status).toLowerCase()}">
       <div class="row"><b>${t.symbol||"XAU/USD"} · ${t.timeframe||"M1"} · ${t.direction} · ${t.status}</b><b>${money(t.pnl)}</b></div>
-      <div class="row"><span>Entry / Exit</span><b>${price(t.entry)} / ${price(t.exit)}</b></div>
+      <div class="row"><span>Entry / Exit</span><b>${price(t.entry)} / ${t.exit===null||t.exit===undefined?"—":price(t.exit)}</b></div>
       <div class="row"><span>SL / TP</span><b>${price(t.stop_loss)} / ${price(t.take_profit)}</b></div>
       <div class="row"><span>Volume</span><b>${Number(t.volume).toFixed(6)}</b></div>
-      <div class="small">${t.openedAt?new Date(t.openedAt).toLocaleString():new Date(t.createdAt).toLocaleString()}${t.closedAt?" → "+new Date(t.closedAt).toLocaleString():""}</div>
+      <div class="small">${t.openedAt?new Date(t.openedAt).toLocaleString():new Date(t.createdAt).toLocaleString()}${t.closedAt?" → "+new Date(t.closedAt).toLocaleString():""}${t.reason?" · "+t.reason:""}</div>
     </div>`).join("");
   saveShadow();
 }
